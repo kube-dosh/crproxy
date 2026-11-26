@@ -1,0 +1,35 @@
+[Unit]
+Description=crproxy OCI registry and pull-through cache
+Documentation=https://github.com/example/crproxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=crproxy
+Group=crproxy
+EnvironmentFile=-/etc/crproxy/crproxy.env
+ExecStart=/usr/local/bin/crproxy serve -config /etc/crproxy/crproxy.yaml
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+LimitNOFILE=1048576
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/var/lib/crproxy
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

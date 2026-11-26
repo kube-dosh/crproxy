@@ -1,0 +1,65 @@
+server:
+  listen: "0.0.0.0:5000"
+  public_host: "localhost:5000"
+  public_scheme: "http"
+  tls:
+    mode: ""
+  trusted_proxies: []
+
+auth:
+  registry:
+    challenge: bearer
+    service: crproxy
+    allow_anonymous: false
+    token_ttl: 5m
+  bootstrap_admin:
+    username: admin
+    password_env: CRPROXY_ADMIN_PASSWORD
+  web:
+    session_ttl: 12h
+    idle_timeout: 30m
+
+storage:
+  root: /var/lib/crproxy
+  max_blob_bytes: 21474836480
+  max_manifest_bytes: 4194304
+  uploads_ttl: 24h
+  max_bytes: 107374182400
+  cache_max_bytes: 64424509440
+  min_free_bytes: 5368709120
+  high_watermark: 0.85
+  low_watermark: 0.70
+  on_full: bypass
+  download_concurrency: 8
+  tmp_ttl: 1h
+  trash_ttl: 24h
+  audit_retention: 2160h
+
+proxy:
+  disabled: false
+  path_prefix: r
+
+upstreams_seed:
+  - id: dockerhub
+    name: dockerhub
+    endpoint: https://registry-1.docker.io
+    route_prefix: dockerhub
+    repository_prefix: library
+    auth_type: challenge
+    tag_ttl: 60s
+    request_timeout: 30s
+  - id: k8s
+    name: k8s
+    endpoint: https://registry.k8s.io
+    route_prefix: k8s
+    auth_type: anonymous
+  - id: quay
+    name: quay
+    endpoint: https://quay.io
+    route_prefix: quay
+    auth_type: challenge
+  - id: ghcr
+    name: ghcr
+    endpoint: https://ghcr.io
+    route_prefix: ghcr
+    auth_type: challenge

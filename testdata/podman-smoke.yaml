@@ -1,0 +1,42 @@
+server:
+  listen: "127.0.0.1:15003"
+  public_host: "127.0.0.1:15003"
+
+auth:
+  registry:
+    challenge: bearer
+    service: crproxy
+    allow_anonymous: false
+    token_ttl: 5m
+  bootstrap_admin:
+    username: admin
+    password_env: CRPROXY_ADMIN_PASSWORD
+
+storage:
+  root: /tmp/crproxy-podman-data-20261126
+
+proxy:
+  path_prefix: r
+
+upstreams_seed:
+  - id: dockerhub
+    name: dockerhub
+    endpoint: https://registry-1.docker.io
+    route_prefix: dockerhub
+    repository_prefix: library
+    auth_type: challenge
+  - id: k8s
+    name: k8s
+    endpoint: https://registry.k8s.io
+    route_prefix: k8s
+    auth_type: anonymous
+  - id: quay
+    name: quay
+    endpoint: https://quay.io
+    route_prefix: quay
+    auth_type: challenge
+  - id: ghcr
+    name: ghcr
+    endpoint: https://ghcr.io
+    route_prefix: ghcr
+    auth_type: challenge

@@ -1,0 +1,91 @@
+server:
+  listen: ":5000"
+  # Public host and scheme are used for Bearer realm, Secure cookies, redirects and
+  # the absolute URLs displayed by the management console. Set them to the address
+  # clients actually use when a reverse proxy terminates TLS.
+  public_host: "localhost:5000"
+  public_scheme: "http" # http or https; defaults to https when tls.mode=file
+  trusted_proxies: []
+    # Only trust forwarding headers from networks you control, for example:
+    # - "127.0.0.1/32"
+    # - "10.0.0.0/8"
+  tls:
+    mode: "" # "", "file"; prefer a TLS-terminating reverse proxy in production
+    cert_file: ""
+    key_file: ""
+    min_version: "1.2" # 1.2 or 1.3
+    reload_seconds: 60 # reload cert/key atomically; keep serving the old pair on failure
+    hsts: false # enable only after HTTPS is permanent for this hostname
+
+auth:
+  registry:
+    challenge: bearer # bearer or basic
+    service: crproxy
+    realm: "" # defaults to <public_scheme>://<public_host>
+    allow_anonymous: false
+    token_ttl: 5m
+  web:
+    session_ttl: 12h
+    idle_timeout: 30m
+  bootstrap_admin:
+    username: admin
+    password: ""
+    password_env: CRPROXY_ADMIN_PASSWORD
+  jwt_secret_file: "" # defaults to <storage.root>/meta/jwt.secret
+  master_key_file: "" # defaults to <storage.root>/meta/master.key
+
+storage:
+  root: ./data
+  max_blob_bytes: 21474836480
+  max_manifest_bytes: 4194304
+  uploads_ttl: 24h
+  max_bytes: 107374182400
+  cache_max_bytes: 64424509440
+  min_free_bytes: 5368709120
+  high_watermark: 0.85
+  low_watermark: 0.70
+  on_full: bypass # bypass upstream caching or reject writes when full
+  download_concurrency: 8
+  tmp_ttl: 1h
+  trash_ttl: 24h
+  audit_retention: 2160h
+
+proxy:
+  disabled: false
+  path_prefix: r
+
+# Seed entries are created only when the upstream ID does not already exist.
+# Changes made through the management API are not overwritten by this section.
+# Upstream requests honor HTTP_PROXY, HTTPS_PROXY and NO_PROXY from the process
+# environment. HTTPS upstreams use the proxy through an HTTP CONNECT tunnel.
+upstreams_seed:
+  - id: dockerhub
+    name: dockerhub
+    endpoint: https://registry-1.docker.io
+    route_prefix: dockerhub
+    repository_prefix: library
+    auth_type: challenge
+    tag_ttl: 60s
+    request_timeout: 30s
+  - id: k8s
+    name: k8s
+    endpoint: https://registry.k8s.io
+    route_prefix: k8s
+    auth_type: anonymous
+  - id: quay
+    name: quay
+    endpoint: https://quay.io
+    route_prefix: quay
+    auth_type: challenge
+  - id: ghcr
+    name: ghcr
+    endpoint: https://ghcr.io
+    route_prefix: ghcr
+    auth_type: challenge
+    # Private repositories: use basic or bearer and supply secrets through the
+    # environment rather than committing them to this file.
+    # auth_type: basic
+    # username: example
+    # password_env: CRPROXY_GHCR_PASSWORD
+    # ca_file: /etc/crproxy/ghcr-ca.pem
+    # insecure_skip_verify: false

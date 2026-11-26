@@ -1,0 +1,716 @@
+openapi: 3.1.0
+info:
+  title: crproxy Management API
+  version: 0.1.0
+  description: |
+    Management API for crproxy. Registry traffic uses the OCI Distribution API at
+    `/v2/` and is documented separately in `registry-protocol-design.md`.
+    Browser sessions use an HttpOnly cookie and require `X-CSRF-Token` on
+    state-changing requests. PATs use `Authorization: Bearer <token>`.
+servers:
+  - url: http://localhost:5000
+    description: Local default
+tags:
+  - name: Auth
+  - name: System
+  - name: Repositories
+  - name: Cache
+  - name: Uploads
+  - name: Storage
+  - name: Upstreams
+  - name: Identity
+  - name: Audit
+security:
+  - cookieAuth: []
+  - bearerAuth: []
+paths:
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Create a browser session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: {type: string}
+                password: {type: string, format: password}
+      responses:
+        '200': {$ref: '#/components/responses/Session'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+  /api/v1/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Revoke the current browser session
+      responses:
+        '204': {description: Logged out}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /api/v1/auth/session:
+    get:
+      tags: [Auth]
+      summary: Read the current user and CSRF token
+      responses:
+        '200': {$ref: '#/components/responses/Session'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /api/v1/auth/password:
+    post:
+      tags: [Auth]
+      summary: Change the current user's password
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: {type: string, format: password}
+                newPassword: {type: string, format: password, minLength: 12}
+      responses:
+        '204': {description: Password changed and sessions revoked}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /api/v1/system/info:
+    get:
+      tags: [System]
+      summary: Runtime and build information
+      responses:
+        '200':
+          description: System information
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /api/v1/overview:
+    get:
+      tags: [System]
+      summary: Dashboard summary
+      responses:
+        '200': {$ref: '#/components/responses/Object'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /api/v1/events/timeline:
+    get:
+      tags: [System]
+      summary: Dense hourly registry event buckets
+      parameters:
+        - name: hours
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 168, default: 24}
+      responses:
+        '200': {$ref: '#/components/responses/Object'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+  /api/v1/registry/summary:
+    get:
+      tags: [System]
+      summary: Registry repository and content totals
+      responses:
+        '200': {$ref: '#/components/responses/Object'}
+  /api/v1/repositories:
+    get:
+      tags: [Repositories]
+      summary: List local and cache repositories
+      parameters:
+        - name: kind
+          in: query
+          schema: {type: string, enum: [local, cache]}
+        - name: q
+          in: query
+          schema: {type: string}
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+        - name: offset
+          in: query
+          schema: {type: integer, minimum: 0, default: 0}
+      responses:
+        '200': {$ref: '#/components/responses/Object'}
+  /api/v1/repositories/{id}:
+    parameters: [{$ref: '#/components/parameters/RepositoryID'}]
+    get:
+      tags: [Repositories]
+      summary: Get one repository
+      responses:
+        '200': {$ref: '#/components/responses/Object'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    delete:
+      tags: [Repositories]
+      summary: Delete a local repository or evict a cache repository
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      responses:
+        '200': {$ref: '#/components/responses/Object'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/v1/repositories/{id}/tags:
+    parameters: [{$ref: '#/components/parameters/RepositoryID'}]
+    get:
+      tags: [Repositories]
+      summary: List tags
+      responses:
+        '200': {$ref: '#/components/responses/Object'}
+  /api/v1/repositories/{id}/manifests:
+    parameters: [{$ref: '#/components/parameters/RepositoryID'}]
+    get:
+      tags: [Repositories]
+      summary: List manifests referenced by a repository
+      responses:
+        '200': {$ref: '#/components/responses/Object'}
+  /api/v1/repositories/{id}/blobs:
+    parameters: [{$ref: '#/components/parameters/RepositoryID'}]
+    get:
+      tags: [Repositories]
+      summary: List blobs referenced by a repository
+      responses:
+        '200': {$ref: '#/components/responses/Object'}
+  /api/v1/repositories/{id}/referrers:
+    parameters: [{$ref: '#/components/parameters/RepositoryID'}]
+    get:
+      tags: [Repositories]
+      summary: List referrers for repository manifests
+      responses:
+        '200': {$ref: '#/components/responses/Object'}
+  /api/v1/repositories/{id}/manifests/{digest}:
+    parameters:
+      - {$ref: '#/components/parameters/RepositoryID'}
+      - name: digest
+        in: path
+        required: true
+        schema: {type: string}
+    delete:
+      tags: [Repositories]
+      summary: Delete a manifest and all tags that reference it
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      responses:
+        '200': {$ref: '#/components/responses/Object'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/v1/repositories/{id}/tags/{tag}:
+    parameters:
+      - {$ref: '#/components/parameters/RepositoryID'}
+      - name: tag
+        in: path
+        required: true
+        schema: {type: string}
+    delete:
+      tags: [Repositories]
+      summary: Delete a tag without deleting its manifest
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      responses:
+        '204': {description: Deleted}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/v1/cache/entries:
+    get:
+      tags: [Cache]
+      summary: List cache content entries
+      parameters:
+        - name: upstream_id
+          in: query
+          schema: {type: string}
+        - name: kind
+          in: query
+          schema: {type: string, enum: [blob, manifest]}
+        - name: q
+          in: query
+          schema: {type: string}
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+        - name: offset
+          in: query
+          schema: {type: integer, minimum: 0, default: 0}
+      responses:
+        '200': {$ref: '#/components/responses/Object'}
+  /api/v1/cache/evictions:
+    post:
+      tags: [Cache]
+      summary: Evict cache repositories or digests asynchronously
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                repositoryId: {type: integer}
+                digests:
+                  type: array
+                  items: {type: string}
+              additionalProperties: false
+      responses:
+        '202': {$ref: '#/components/responses/Job'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+  /api/v1/cache/jobs/{id}:
+    parameters: [{$ref: '#/components/parameters/JobID'}]
+    get:
+      tags: [Cache]
+      summary: Get cache eviction job
+      responses:
+        '200': {$ref: '#/components/responses/Job'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/v1/uploads:
+    get:
+      tags: [Uploads]
+      summary: List upload sessions
+      responses:
+        '200': {$ref: '#/components/responses/Object'}
+  /api/v1/uploads/active:
+    get:
+      tags: [Uploads]
+      summary: List active upload sessions
+      responses:
+        '200': {$ref: '#/components/responses/Object'}
+  /api/v1/uploads/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string}
+    delete:
+      tags: [Uploads]
+      summary: Cancel an upload session
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      responses:
+        '200': {$ref: '#/components/responses/Object'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/v1/storage/summary:
+    get:
+      tags: [Storage]
+      summary: Storage usage, quotas, disk and GC state
+      responses:
+        '200': {$ref: '#/components/responses/Object'}
+  /api/v1/storage/breakdown:
+    get:
+      tags: [Storage]
+      summary: Storage usage grouped by upstream or repository
+      parameters:
+        - name: group_by
+          in: query
+          schema: {type: string, enum: [upstream, repository], default: upstream}
+      responses:
+        '200': {$ref: '#/components/responses/Object'}
+  /api/v1/storage/settings:
+    get:
+      tags: [Storage]
+      summary: Read storage settings
+      responses:
+        '200': {$ref: '#/components/responses/Object'}
+    put:
+      tags: [Storage]
+      summary: Update storage thresholds
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/StorageSettings'}
+      responses:
+        '200': {$ref: '#/components/responses/Object'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+  /api/v1/storage/gc:
+    post:
+      tags: [Storage]
+      summary: Start garbage collection
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      responses:
+        '202': {$ref: '#/components/responses/Job'}
+  /api/v1/storage/fsck:
+    post:
+      tags: [Storage]
+      summary: Start quick or full filesystem check
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mode]
+              properties:
+                mode: {type: string, enum: [quick, full]}
+      responses:
+        '202': {$ref: '#/components/responses/Job'}
+  /api/v1/storage/jobs:
+    get:
+      tags: [Storage]
+      summary: List maintenance jobs
+      responses:
+        '200': {$ref: '#/components/responses/Object'}
+  /api/v1/storage/jobs/{id}:
+    parameters: [{$ref: '#/components/parameters/JobID'}]
+    get:
+      tags: [Storage]
+      summary: Get a maintenance job
+      responses:
+        '200': {$ref: '#/components/responses/Job'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/v1/upstreams:
+    get:
+      tags: [Upstreams]
+      summary: List upstreams
+      responses:
+        '200': {$ref: '#/components/responses/Object'}
+    post:
+      tags: [Upstreams]
+      summary: Create an upstream
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpstreamInput'}
+      responses:
+        '201': {$ref: '#/components/responses/Upstream'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/v1/upstreams/{id}:
+    parameters: [{$ref: '#/components/parameters/UpstreamID'}]
+    get:
+      tags: [Upstreams]
+      summary: Get an upstream
+      responses:
+        '200': {$ref: '#/components/responses/Upstream'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    put:
+      tags: [Upstreams]
+      summary: Update an upstream
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpstreamInput'}
+      responses:
+        '200': {$ref: '#/components/responses/Upstream'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    delete:
+      tags: [Upstreams]
+      summary: Delete an upstream and its cache metadata
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      responses:
+        '204': {description: Deleted}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/v1/upstreams/{id}/test:
+    parameters: [{$ref: '#/components/parameters/UpstreamID'}]
+    post:
+      tags: [Upstreams]
+      summary: Test upstream connectivity
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      responses:
+        '200': {$ref: '#/components/responses/Object'}
+        '502': {$ref: '#/components/responses/Object'}
+  /api/v1/users:
+    get:
+      tags: [Identity]
+      summary: List users (administrator)
+      responses:
+        '200': {$ref: '#/components/responses/Object'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    post:
+      tags: [Identity]
+      summary: Create a user (administrator)
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password, role]
+              properties:
+                username: {type: string}
+                password: {type: string, format: password, minLength: 12}
+                role: {$ref: '#/components/schemas/Role'}
+      responses:
+        '201': {$ref: '#/components/responses/User'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/v1/users/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string}
+    patch:
+      tags: [Identity]
+      summary: Update role or enabled state (administrator)
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role: {$ref: '#/components/schemas/Role'}
+                enabled: {type: boolean}
+      responses:
+        '200': {$ref: '#/components/responses/User'}
+        '409': {$ref: '#/components/responses/Conflict'}
+    delete:
+      tags: [Identity]
+      summary: Delete a user (administrator)
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      responses:
+        '204': {description: Deleted}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/v1/users/{id}/password:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string}
+    post:
+      tags: [Identity]
+      summary: Reset a user's password (administrator)
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: {type: string, format: password, minLength: 12}
+      responses:
+        '204': {description: Password reset}
+  /api/v1/tokens:
+    get:
+      tags: [Identity]
+      summary: List the caller's PATs
+      responses:
+        '200': {$ref: '#/components/responses/Object'}
+    post:
+      tags: [Identity]
+      summary: Create a PAT
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, scopes, expiresInDays]
+              properties:
+                name: {type: string}
+                scopes:
+                  type: array
+                  items: {type: string, enum: [pull, push, delete, manage, admin]}
+                expiresInDays: {type: integer, minimum: 1, maximum: 3650}
+      responses:
+        '201': {$ref: '#/components/responses/Object'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+  /api/v1/tokens/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string}
+    delete:
+      tags: [Identity]
+      summary: Revoke a PAT
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      responses:
+        '204': {description: Revoked}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/v1/audit:
+    get:
+      tags: [Audit]
+      summary: List audit events (operator or administrator)
+      parameters:
+        - name: before
+          in: query
+          schema: {type: integer}
+        - name: action
+          in: query
+          schema: {type: string}
+        - name: result
+          in: query
+          schema: {type: string, enum: [success, failure, denied, accepted]}
+      responses:
+        '200': {$ref: '#/components/responses/Object'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: crproxy_session
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: PAT created through /api/v1/tokens
+  parameters:
+    CSRF:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      schema: {type: string}
+      description: Required for cookie-authenticated state-changing requests.
+    RepositoryID:
+      name: id
+      in: path
+      required: true
+      schema: {type: integer, minimum: 1}
+    UpstreamID:
+      name: id
+      in: path
+      required: true
+      schema: {type: string}
+    JobID:
+      name: id
+      in: path
+      required: true
+      schema: {type: string}
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code: {type: string}
+        message: {type: string}
+        details: {}
+    Role:
+      type: string
+      enum: [admin, operator, viewer]
+    User:
+      type: object
+      required: [id, username, role, enabled, mustChangePassword, createdAt]
+      properties:
+        id: {type: string}
+        username: {type: string}
+        role: {$ref: '#/components/schemas/Role'}
+        enabled: {type: boolean}
+        mustChangePassword: {type: boolean}
+        createdAt: {type: string, format: date-time}
+        lastLoginAt: {type: string, format: date-time}
+    Session:
+      type: object
+      required: [user, authMode]
+      properties:
+        user: {$ref: '#/components/schemas/User'}
+        csrfToken: {type: string}
+        authMode: {type: string, enum: [session, pat]}
+    StorageSettings:
+      type: object
+      required: [maxBytes, cacheMaxBytes, minFreeBytes, highWatermark, lowWatermark, onFull]
+      properties:
+        maxBytes: {type: integer, minimum: 1}
+        cacheMaxBytes: {type: integer, minimum: 1}
+        minFreeBytes: {type: integer, minimum: 0}
+        highWatermark: {type: number, exclusiveMinimum: 0, maximum: 1}
+        lowWatermark: {type: number, exclusiveMinimum: 0, exclusiveMaximum: 1}
+        onFull: {type: string, enum: [bypass, reject]}
+    UpstreamCredentials:
+      type: object
+      properties:
+        username: {type: string}
+        password: {type: string, format: password}
+        bearerToken: {type: string, format: password}
+    UpstreamInput:
+      type: object
+      required: [name, endpoint, authType, tagTtlSeconds, requestTimeoutSeconds, enabled]
+      properties:
+        id: {type: string, pattern: '^[a-z0-9][a-z0-9_-]{0,63}$'}
+        name: {type: string}
+        endpoint: {type: string, format: uri}
+        routeHost: {type: string}
+        routePrefix: {type: string}
+        repositoryPrefix: {type: string}
+        authType: {type: string, enum: [anonymous, basic, bearer, challenge]}
+        caPem: {type: string}
+        insecureSkipVerify: {type: boolean}
+        tagTtlSeconds: {type: integer, minimum: 0}
+        requestTimeoutSeconds: {type: integer, minimum: 1}
+        maxBlobBytes: {type: integer}
+        clearMaxBlobBytes: {type: boolean}
+        enabled: {type: boolean}
+        replaceCredentials: {type: boolean}
+        credentials: {$ref: '#/components/schemas/UpstreamCredentials'}
+    Upstream:
+      allOf:
+        - $ref: '#/components/schemas/UpstreamInput'
+        - type: object
+          required: [hasCredentials, healthState]
+          properties:
+            hasCredentials: {type: boolean}
+            healthState: {type: string, enum: [unknown, healthy, unhealthy]}
+            healthMessage: {type: string}
+            healthCheckedAt: {type: string, format: date-time}
+    Job:
+      type: object
+      required: [id, type, state]
+      properties:
+        id: {type: string}
+        type: {type: string}
+        state: {type: string, enum: [queued, running, succeeded, failed]}
+        progressJson: {type: string}
+        resultJson: {type: string}
+        requestedBy: {type: string}
+        startedAt: {type: string, format: date-time}
+        finishedAt: {type: string, format: date-time}
+        error: {type: string}
+  responses:
+    Object:
+      description: JSON object
+      content:
+        application/json:
+          schema: {type: object, additionalProperties: true}
+    User:
+      description: User
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/User'}
+    Session:
+      description: Session
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Session'}
+    Upstream:
+      description: Upstream
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Upstream'}
+    Job:
+      description: Maintenance job
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Job'}
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    Unauthorized:
+      description: Authentication required
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    Forbidden:
+      description: Insufficient role, scope, CSRF or password-change requirement
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    Conflict:
+      description: State conflict such as a duplicate or protected resource
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    RateLimited:
+      description: Login rate limit exceeded
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}

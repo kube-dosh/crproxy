@@ -1,0 +1,36 @@
+services:
+  crproxy:
+    build:
+      context: .
+      args:
+        VERSION: ${CRPROXY_VERSION:-0.1.0-dev}
+    image: crproxy:${CRPROXY_VERSION:-local}
+    restart: unless-stopped
+    ports:
+      - "${CRPROXY_PORT:-5000}:5000"
+    environment:
+      CRPROXY_ADMIN_PASSWORD: ${CRPROXY_ADMIN_PASSWORD:?set CRPROXY_ADMIN_PASSWORD to at least 12 characters}
+      CRPROXY_PUBLIC_HOST: ${CRPROXY_PUBLIC_HOST:-localhost:5000}
+      CRPROXY_PUBLIC_SCHEME: ${CRPROXY_PUBLIC_SCHEME:-http}
+      CRPROXY_ALLOW_ANONYMOUS: "false"
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-}
+    volumes:
+      - crproxy-data:/var/lib/crproxy
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "/crproxy", "healthcheck", "-url", "http://127.0.0.1:5000/api/v1/readyz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  crproxy-data:

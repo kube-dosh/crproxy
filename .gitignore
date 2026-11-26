@@ -1,0 +1,9 @@
+/data/
+/bin/
+/crproxy
+*.test
+*.out
+coverage.*
+/ca-certificates.crt
+/web/node_modules/
+/web/dist/

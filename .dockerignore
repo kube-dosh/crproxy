@@ -1,0 +1,9 @@
+.git
+.gitignore
+data
+bin
+web/node_modules
+web/dist
+*.test
+*.out
+coverage.*
