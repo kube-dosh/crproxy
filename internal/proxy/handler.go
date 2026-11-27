@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"crproxy/internal/auth"
@@ -28,11 +29,12 @@ type Handler struct {
 	Logger           *slog.Logger
 	Storage          *storage.Manager
 
-	mu        sync.RWMutex
-	upstreams []*Upstream
-	byPrefix  map[string]*Upstream
-	byHost    map[string]*Upstream
-	flights   flightGroup
+	mu                 sync.RWMutex
+	upstreams          []*Upstream
+	byPrefix           map[string]*Upstream
+	byHost             map[string]*Upstream
+	flights            flightGroup
+	runtimeMaxManifest atomic.Pointer[int64]
 }
 
 type parsedRoute struct {
@@ -63,6 +65,17 @@ func NewHandler(local http.Handler, metadata *store.Store, casStore *cas.Store, 
 		return nil, err
 	}
 	return h, nil
+}
+
+func (h *Handler) ApplyMaxManifestBytes(limit int64) {
+	h.runtimeMaxManifest.Store(&limit)
+}
+
+func (h *Handler) maxManifestBytes() int64 {
+	if dynamic := h.runtimeMaxManifest.Load(); dynamic != nil {
+		return *dynamic
+	}
+	return h.MaxManifestBytes
 }
 
 func (h *Handler) ReplaceUpstreams(upstreams []*Upstream) error {

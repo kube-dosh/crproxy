@@ -116,7 +116,7 @@ func toTokenResponse(token store.APIToken) tokenResponse {
 		UserID:    token.UserID,
 		Name:      token.Name,
 		Prefix:    token.Prefix,
-		Scopes:    append([]string(nil), token.Scopes...),
+		Scopes:    append([]string{}, token.Scopes...),
 		CreatedAt: token.CreatedAt,
 		ExpiresAt: token.ExpiresAt,
 		RevokedAt: token.RevokedAt,

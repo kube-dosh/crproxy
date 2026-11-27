@@ -69,7 +69,7 @@ func (s *Store) ListLocalRepositoryNames(ctx context.Context, last string, limit
 		return nil, err
 	}
 	defer rows.Close()
-	var result []string
+	result := make([]string, 0)
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {

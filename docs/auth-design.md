@@ -7,7 +7,7 @@
 ### 1.1 范围
 
 - Registry `/v2/` 客户端鉴权：Basic、Bearer PAT、Docker Registry token flow，覆盖 pull/push/delete。
-- 管理台与 `/api/v1/`：Web Session、Basic、Bearer PAT、CSRF。
+- 管理台与 `/api/v1/`：仅 HttpOnly Web Session 和 CSRF；不接受 Basic 或 Bearer PAT。
 - 上游 Registry 鉴权：匿名、Basic、静态 Bearer、Bearer challenge token。
 - 密码、PAT、Session、上游凭证的存储与加密。
 - TLS、证书热加载、反向代理信任边界。
@@ -34,7 +34,7 @@
 | operator | 是 | 是 | 是 | 是 | 是 | 否 | 是 |
 | viewer | 是 | 是 | 否 | 否 | 否 | 否 | 否 |
 
-系统设置页只读，仅展示运行时、端点和存储摘要，不提供写接口。存储阈值属于“管理上游/缓存/存储”的运维能力，由 admin 和 operator 在“存储与磁盘”页修改并写入审计。权限模型固定按角色控制，不实现仓库级 ACL。代理上游对所有允许 pull 的用户只读；本地仓库的 push/delete 仅 admin 和 operator 可用。
+配置按业务场景分散到管理台，均写入 SQLite 运行时配置并记录 `config.runtime.update`/`config.runtime.reset` 审计。admin 可修改认证、会话、代理入口、HSTS、出站代理和审计保留期；admin/operator 可修改存储策略和上传 TTL。权限模型固定按角色控制，不实现仓库级 ACL。代理上游对所有允许 pull 的用户只读；本地仓库的 push/delete 仅 admin 和 operator 可用。
 
 ### 2.2 Scope
 
@@ -50,7 +50,7 @@ admin     # 管理用户、其他用户 Token 和审计
 
 规则：
 
-- Session 和 Basic 使用用户角色推导权限。
+- 管理台 Session 与 Distribution Basic 使用用户角色推导权限。
 - PAT 的有效权限 = 用户角色权限 ∩ PAT scopes。
 - 创建 PAT 时只能授予当前用户自身拥有的权限。
 - viewer 只能创建 `pull` token。
@@ -58,10 +58,21 @@ admin     # 管理用户、其他用户 Token 和审计
 - admin 可以创建全部 scope。
 - Docker JWT 只包含 repository 的 pull/push/delete scope，不包含管理权限。
 - 代理上游路由即使 JWT 包含 push/delete，也只允许 pull；写方法返回 `405`。
-- `/v2/_catalog` 不通过 repository scope 授权；要求 Basic、PAT 或管理台 Session，并且用户具备 `manage` 或 `admin`。
+- `/v2/_catalog` 不通过 repository scope 授权；要求 Distribution 的 Basic 或 PAT，并且用户具备 `manage` 或 `admin`。管理台 Session 不能用于 `/v2/`。
 - 本地 Registry 的 push/delete 必须同时校验角色权限和 PAT/JWT scope；代理路由不因为没有 push 权限而返回 403，而是直接返回 405。
 
 ## 3. 客户端鉴权总览
+
+### 3.1 管理面与 Distribution 面边界
+
+| 路径 | 唯一认证方式 | 禁止的凭据 | 未认证响应 |
+| --- | --- | --- | --- |
+| `/api/v1/*`（登录除外） | HttpOnly Session Cookie + CSRF | Basic、Bearer PAT、Bearer JWT、`WWW-Authenticate` 协商 | JSON 401，无认证挑战 |
+| `/v2/*` | Basic、Bearer PAT、Docker JWT；可配置 anonymous pull | 管理台 Session Cookie | Distribution challenge |
+| `/v2/token` | Basic 用户名密码、Basic + PAT、Bearer PAT | 管理台 Session Cookie、Docker JWT | Basic challenge |
+| `/api/v1/healthz`、`/api/v1/readyz`、`/metrics` | 无认证的运维探针/指标 | 不适用 | 非 401 |
+
+管理 API 的认证器与 Distribution 认证器是独立的依赖边界：`internal/adminapi` 不持有 `internal/auth.Authenticator`，只读取 Session Cookie；Registry/Proxy 只读取 `Authorization`，不读取 Session Cookie。
 
 ```text
                          ┌──────────────────────────────┐
@@ -88,35 +99,39 @@ Docker/OCI Client ──────▶│  Basic?                      │
 ```yaml
 auth:
   registry:
-    challenge: bearer       # bearer | basic
-    allow_basic: true
-    allow_bearer: true
-    allow_anonymous: false
+    challenge: bearer          # bearer | basic
     service: crproxy
-    token_ttl: 5m
+    realm: ""                  # 留空使用 <public_scheme>://<public_host>
+    allow_anonymous: false
+    anonymous_actions: [pull] # pull, push, delete, catalog
+    token_ttl: 5m              # 最长 15m
   web:
     session_ttl: 12h
     idle_timeout: 30m
-    cookie_name: "__Host-crp_session"
-    csrf_header: "X-CSRF-Token"
-  pat:
-    allow_as_basic_password: true
-  passwords:
-    argon2_memory_mib: 64
-    argon2_iterations: 3
-    argon2_parallelism: 2
   bootstrap_admin:
     username: admin
-    password_env: CRPROXY_ADMIN_PASSWORD
-  master_key_file: /etc/crproxy/master.key
+    password: ""                # 部署时写入，文件权限 0640 root:crproxy
+  jwt_secret_file: ""          # 留空使用 <storage.root>/meta/jwt.secret
+  master_key_file: ""          # 留空使用 <storage.root>/meta/master.key
 ```
 
-`challenge` 只决定未认证时返回哪种 `WWW-Authenticate`。无论选择哪种 challenge，服务端都接受 Basic 和 Bearer：
+管理台与 YAML 采用同一套语义，但底层键名需要兼容 Docker Registry v2 Token Flow，因此仍保留 `service`、`realm`、`token_ttl` 这些协议术语。
+
+| 用户概念 | 配置键 | 作用 | 默认值 | 修改后的影响 |
+| --- | --- | --- | --- | --- |
+| 访问模式 | `allow_anonymous` + `anonymous_actions` | 决定哪些 Registry action 可以无凭据执行 | 需要认证 | 下一次 `/v2/` 请求生效 |
+| 认证协议 | `challenge` | 401 响应使用 Basic 或 Bearer 的 `WWW-Authenticate`；不是凭据白名单 | `bearer` | 下一次 `/v2/` 请求生效 |
+| 服务标识 | `service` | Token Flow 的 service 与 JWT audience，用于确认 Token 签发给当前 Registry | `crproxy` | 旧 Bearer Token 立即失效 |
+| 令牌服务基地址 | `realm` | 客户端获取 Token 的基地址；crproxy 自动追加 `/v2/token` | `<public_scheme>://<public_host>` | 下一次认证协商生效；不要在末尾填写 `/v2/token` |
+| 令牌有效期 | `token_ttl` | 新签发 Bearer Token 的寿命，最大 15 分钟 | `5m` | 只影响新 Token，已有 Token 按原到期时间失效 |
+
+`challenge` 只决定未认证时返回哪种 `WWW-Authenticate`。无论选择哪种协议，服务端都接受 Basic 和 Bearer：
 
 - `challenge: bearer`：推荐，兼容 Docker token flow。
 - `challenge: basic`：适合只支持 Basic 的简单客户端。
 - 不接受同时发送多个 challenge，避免不同客户端的选择行为不一致。
-- `allow_basic` / `allow_bearer` 可以显式关闭某种凭据。
+
+`service` 会出现在 `WWW-Authenticate` 和 JWT 的 `aud` 中。客户端请求 `/v2/token?service=...` 时必须与配置一致；修改它会立即使此前签发的 Registry JWT 失效。`realm` 只填基地址，例如 `https://registry.example.com`，实际 Token 地址为 `https://registry.example.com/v2/token`。`token_ttl` 只影响新签发的 Token，缩短不会撤销已经签发的 Token。
 
 ## 4. Basic 鉴权
 
@@ -124,8 +139,9 @@ auth:
 
 - `/v2/*`：Docker 客户端直接发送 Basic。
 - `/v2/token`：Docker 用 Basic 凭据换取短期 JWT。
-- `/api/v1/*`：CI、脚本和自动化直接调用管理 API。
-- Web 登录页不使用 Basic challenge，而是 JSON 登录接口。
+- `/api/v1/*`：不接受 Basic；管理与自动化必须通过浏览器 Session，或调用 Distribution API 完成镜像操作。
+- Web 登录页不使用 Basic challenge，而是 JSON 登录接口。管理 API 的未认证响应不发送 `WWW-Authenticate`，避免浏览器弹出原生 Basic 登录框。
+- 所有 `/api/v1/*` 管理资源接口都只接受 HttpOnly Session Cookie，不接受 Basic/PAT，防止浏览器缓存的 Basic 凭据绕过退出状态。
 
 ### 4.2 校验流程
 
@@ -173,10 +189,10 @@ podman login registry.example.com -u alice -p crp_xxx
 
 | 类型 | 格式 | 用途 | 校验方式 |
 | --- | --- | --- | --- |
-| PAT | `crp_<id>_<secret>` | CLI、自动化、管理 API、Registry | SQLite 哈希查询 |
+| PAT | `crp_<id>_<secret>` | Distribution CLI、自动化、Registry | SQLite 哈希查询 |
 | Registry JWT | 三段式 JWT | `/v2/*` 短期 pull/push/delete | HMAC 签名、claims、scope |
 
-管理 API 不接受 Registry JWT，避免把短期 Registry token 当作管理凭据。管理 API 的 Bearer 只接受 PAT。
+管理 API 不接受 PAT 或 Registry JWT，只接受浏览器 Session Cookie。PAT 和 Registry JWT 都只在 Distribution `/v2/*` 与 `/v2/token` 生效。
 
 ### 5.2 Token flow
 
@@ -221,7 +237,7 @@ GET /v2/token
 查询参数：
 
 - `service`：必须等于配置的 `auth.registry.service`，默认 `crproxy`。
-- `scope`：可重复；当前只支持 `repository:<repo>:pull`、`pull,push`、`push,delete`。`registry:catalog:*` 不签发，catalog 使用 Basic/PAT/Session 的 `manage` 或 `admin` 权限。
+- `scope`：可重复；当前只支持 `repository:<repo>:pull`、`pull,push`、`push,delete`。`registry:catalog:*` 不签发，catalog 使用 Distribution Basic/PAT 的 `manage` 或 `admin` 权限。
 - `account`：可选，用于兼容；不作为身份依据。
 - `offline_token`：忽略。
 
@@ -306,12 +322,12 @@ crp_<12 字符 id>_<32 字节随机 secret 的 base64url>
 
 `/v2/*` 路由统一经过 authorization：
 
-- 无凭据且允许匿名：按匿名身份放行 pull。
+- 无凭据且允许匿名：按 `anonymous_actions` 放行对应操作；默认仅 `pull`，可配置 `pull,push`，完全开放的 `delete/catalog` 需显式启用。
 - 无凭据且不允许匿名：返回 `401` + challenge。
 - 代理路由的写方法：直接返回 `405`，不进入 auth scope 授权。
 - Basic 或 Bearer PAT：按方法检查角色或 PAT scope 包含 pull/push/delete。
 - Bearer JWT：检查 `access` 中包含当前 repository 和操作对应的 action。
-- 本地 push：需要 `push`；本地 delete：需要 `delete`；catalog：需要 `manage` 或 `admin`。
+- 本地 push：需要 `push`；本地 delete：需要 `delete`；catalog：需要 `manage` 或 `admin`。匿名身份仅在对应 action 被显式加入 `anonymous_actions` 时放行。
 - catalog 不使用 repository scope；Basic/PAT 按角色和 PAT scope 判断，Session 按角色判断。
 - 已认证但无权限：返回 `403 DENIED`，不再次 challenge。
 - 代理仓库不存在或无权访问时透传上游 `404`，不额外暴露上游私有仓库是否存在。
@@ -426,7 +442,7 @@ __Host-crp_session=<random>; Path=/; Secure; HttpOnly; SameSite=Lax
 - `POST`、`PUT`、`PATCH`、`DELETE` 使用 Cookie 认证时，必须携带 `X-CSRF-Token`。
 - 服务端比较 `X-CSRF-Token` 与会话中的 `csrf_hash`。
 - 同时校验 `Origin` / `Referer` 是否在允许列表中。
-- Basic 和 Bearer 认证不依赖 Cookie，不需要 CSRF，但必须禁止浏览器自动携带这些凭据。
+- Basic 和 Bearer 属于 Distribution 平面，不依赖 Cookie，也不进入管理 API；管理 API 不使用这些凭据。
 - 登录接口校验 Origin，登录成功后轮换 CSRF token。
 
 ### 6.5 Session API
@@ -502,7 +518,7 @@ CREATE TABLE api_tokens (
 
 启动时：
 
-1. 如果 `users` 表为空，读取 `bootstrap_admin.username` 和 `password_env`。
+1. 如果 `users` 表为空，读取 `bootstrap_admin.username` 和 `password`。
 2. 创建 admin，设置 `must_change_password=1`。
 3. 环境变量不存在或密码过短则启动失败，不生成默认密码。
 4. 初始化完成后不再使用该环境变量。
@@ -844,7 +860,7 @@ internal/auth/
     jwt.go             # Docker token 签发和校验
   middleware/
     registry.go        # Basic/Bearer/PAT/JWT/anonymous
-    admin.go           # Session/Basic/PAT + CSRF
+    admin.go           # Session only + CSRF
     permissions.go     # 角色与 scope 矩阵
 internal/upstreamauth/
   challenge.go         # WWW-Authenticate 解析

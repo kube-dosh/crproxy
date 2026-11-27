@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"crproxy/internal/id"
@@ -39,6 +40,7 @@ type Claims struct {
 }
 
 type Signer struct {
+	mu       sync.RWMutex
 	secret   []byte
 	issuer   string
 	audience string
@@ -56,10 +58,31 @@ func NewSigner(secret []byte, issuer, audience string, ttl time.Duration) (*Sign
 }
 
 func (s *Signer) TTL() time.Duration {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.ttl
 }
 
+// Update changes the audience and token lifetime while preserving the signing
+// secret. Changing the audience intentionally invalidates previously issued
+// registry tokens.
+func (s *Signer) Update(audience string, ttl time.Duration) error {
+	if strings.TrimSpace(audience) == "" {
+		return fmt.Errorf("token audience is required")
+	}
+	if ttl <= 0 || ttl > 15*time.Minute {
+		return fmt.Errorf("invalid token ttl")
+	}
+	s.mu.Lock()
+	s.audience = audience
+	s.ttl = ttl
+	s.mu.Unlock()
+	return nil
+}
+
 func (s *Signer) Issue(subject, role, authSource string, access []Access) (string, Claims, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	now := time.Now().UTC()
 	claims := Claims{
 		Issuer:     s.issuer,
@@ -89,6 +112,8 @@ func (s *Signer) Issue(subject, role, authSource string, access []Access) (strin
 }
 
 func (s *Signer) Verify(token string) (Claims, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return Claims{}, ErrInvalidToken

@@ -23,11 +23,12 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
 
 FROM ${RUNTIME_IMAGE}
 COPY --from=build /out/crproxy /crproxy
+COPY LICENSE NOTICE /licenses/
 COPY --chown=65532:65532 deploy/container/crproxy.yaml /etc/crproxy/crproxy.yaml
 COPY --chown=65532:65532 deploy/container/data/. /var/lib/crproxy/
 USER 65532:65532
-EXPOSE 5000
+EXPOSE 5000 5443
 VOLUME ["/var/lib/crproxy"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD ["/crproxy", "healthcheck", "-url", "http://127.0.0.1:5000/api/v1/readyz"]
+  CMD ["/crproxy", "healthcheck", "-url", "http://127.0.0.1:5000/readyz"]
 ENTRYPOINT ["/crproxy", "serve", "-config", "/etc/crproxy/crproxy.yaml"]

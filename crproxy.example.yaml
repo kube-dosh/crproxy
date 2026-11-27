@@ -1,8 +1,10 @@
+# YAML and environment variables are the immutable startup baseline. Runtime
+# overrides saved from the management console live in SQLite settings and are
+# layered on top until reset from the corresponding page.
 server:
   listen: ":5000"
-  # Public host and scheme are used for Bearer realm, Secure cookies, redirects and
-  # the absolute URLs displayed by the management console. Set them to the address
-  # clients actually use when a reverse proxy terminates TLS.
+  # Public host and scheme describe the OCI Registry plane. They are used for the
+  # Bearer realm and registry URLs shown by the management console.
   public_host: "localhost:5000"
   public_scheme: "http" # http or https; defaults to https when tls.mode=file
   trusted_proxies: []
@@ -17,20 +19,41 @@ server:
     reload_seconds: 60 # reload cert/key atomically; keep serving the old pair on failure
     hsts: false # enable only after HTTPS is permanent for this hostname
 
+  # Optional management plane. Remove admin entirely, leave admin.listen empty, or
+  # set admin.listen to the same address to share server.listen. A different address
+  # starts a second listener for the console, /api/v1, /metrics and health checks.
+  # The registry listener then serves only /v2, /v2/token, /healthz and /readyz.
+  # admin:
+  #   listen: ":5443"
+  #   public_host: "localhost:5443"
+  #   public_scheme: "https" # management sessions and redirects use this scheme
+  #   tls:
+  #     mode: "inherit" # inherit | file | none
+  #     # mode=file uses cert_file, key_file, min_version and reload_seconds.
+
 auth:
   registry:
+    # 401 时要求客户端使用哪种认证协议。它只控制 WWW-Authenticate 的形式，
+    # 不是凭据白名单；服务端仍可识别 Basic、PAT 和 Registry JWT。
     challenge: bearer # bearer or basic
+    # Docker Registry v2 Token Flow 的 service / JWT audience。
+    # 普通单实例保持 crproxy 即可；修改后旧 Bearer Token 会立即失效。
     service: crproxy
-    realm: "" # defaults to <public_scheme>://<public_host>
+    # Token 服务基地址，crproxy 会自动追加 /v2/token；不要填写完整的 /v2/token 地址。
+    # 留空时使用 <public_scheme>://<public_host>，最终换取地址为 <公开地址>/v2/token。
+    realm: ""
     allow_anonymous: false
+    anonymous_actions: [pull] # pull, push, delete, catalog
+    # Bearer Token 有效期，默认 5m，最长 15m；只影响新签发的 Token。
     token_ttl: 5m
   web:
     session_ttl: 12h
     idle_timeout: 30m
   bootstrap_admin:
     username: admin
+    # Set the real value in the deployed /etc/crproxy/crproxy.yaml.
+    # The file contains secrets and must be 0640 root:crproxy.
     password: ""
-    password_env: CRPROXY_ADMIN_PASSWORD
   jwt_secret_file: "" # defaults to <storage.root>/meta/jwt.secret
   master_key_file: "" # defaults to <storage.root>/meta/master.key
 
@@ -54,10 +77,20 @@ proxy:
   disabled: false
   path_prefix: r
 
+# Outbound HTTP/HTTPS proxy used for upstream registry requests.
+# Keep this block and all values here; systemd deployments do not need a separate
+# environment file. Set both proxy URLs to empty strings to force direct access.
+outbound_proxy:
+  http_proxy: ""
+  https_proxy: ""
+  no_proxy: ""
+  username: ""
+  # Real credentials belong only in the deployed 0640 YAML, never in git.
+  password: ""
+
 # Seed entries are created only when the upstream ID does not already exist.
 # Changes made through the management API are not overwritten by this section.
-# Upstream requests honor HTTP_PROXY, HTTPS_PROXY and NO_PROXY from the process
-# environment. HTTPS upstreams use the proxy through an HTTP CONNECT tunnel.
+# HTTPS upstreams use the outbound proxy through an HTTP CONNECT tunnel.
 upstreams_seed:
   - id: dockerhub
     name: dockerhub

@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -41,20 +40,26 @@ type Config struct {
 	DownloadConcurrency int
 }
 
+type Policy struct {
+	Settings            Settings
+	TmpTTL              time.Duration
+	TrashTTL            time.Duration
+	DownloadConcurrency int
+}
+
 type Manager struct {
-	store          *store.Store
-	cas            *cas.Store
-	root           string
-	tmpTTL         time.Duration
-	trashTTL       time.Duration
-	logger         *slog.Logger
-	settingsMu     sync.RWMutex
-	settings       Settings
-	gcMu           sync.Mutex
-	gcStatusMu     sync.RWMutex
-	gcStatus       GCStatus
-	active         atomic.Int64
-	downloadTokens chan struct{}
+	store           *store.Store
+	cas             *cas.Store
+	root            string
+	tmpTTL          time.Duration
+	trashTTL        time.Duration
+	logger          *slog.Logger
+	settingsMu      sync.RWMutex
+	settings        Settings
+	gcMu            sync.Mutex
+	gcStatusMu      sync.RWMutex
+	gcStatus        GCStatus
+	downloadLimiter *downloadLimiter
 }
 
 type DiskInfo struct {
@@ -117,14 +122,14 @@ func New(metadata *store.Store, casStore *cas.Store, cfg Config, logger *slog.Lo
 		return nil, err
 	}
 	manager := &Manager{
-		store:          metadata,
-		cas:            casStore,
-		root:           cfg.Root,
-		tmpTTL:         cfg.TmpTTL,
-		trashTTL:       cfg.TrashTTL,
-		logger:         logger,
-		settings:       cfg.Settings,
-		downloadTokens: make(chan struct{}, cfg.DownloadConcurrency),
+		store:           metadata,
+		cas:             casStore,
+		root:            cfg.Root,
+		tmpTTL:          cfg.TmpTTL,
+		trashTTL:        cfg.TrashTTL,
+		logger:          logger,
+		settings:        cfg.Settings,
+		downloadLimiter: newDownloadLimiter(cfg.DownloadConcurrency),
 	}
 	if raw, err := metadata.Setting(context.Background(), "storage.settings"); err == nil {
 		var persisted Settings
@@ -165,6 +170,52 @@ func (m *Manager) Settings() Settings {
 	return m.settings
 }
 
+func (m *Manager) Policy() Policy {
+	m.settingsMu.RLock()
+	defer m.settingsMu.RUnlock()
+	return Policy{Settings: m.settings, TmpTTL: m.tmpTTL, TrashTTL: m.trashTTL, DownloadConcurrency: m.downloadLimiterLimit()}
+}
+
+func (m *Manager) downloadLimiterLimit() int {
+	m.downloadLimiter.mu.Lock()
+	defer m.downloadLimiter.mu.Unlock()
+	return m.downloadLimiter.limit
+}
+
+func (m *Manager) ApplyPolicy(policy Policy) error {
+	if err := validateSettings(policy.Settings); err != nil {
+		return err
+	}
+	if policy.TmpTTL <= 0 {
+		return fmt.Errorf("%w: tmp TTL must be positive", ErrInvalidSettings)
+	}
+	if policy.TrashTTL <= 0 {
+		return fmt.Errorf("%w: trash TTL must be positive", ErrInvalidSettings)
+	}
+	if policy.DownloadConcurrency <= 0 || policy.DownloadConcurrency > 256 {
+		return fmt.Errorf("%w: download concurrency must be between 1 and 256", ErrInvalidSettings)
+	}
+	m.settingsMu.Lock()
+	m.settings = policy.Settings
+	m.tmpTTL = policy.TmpTTL
+	m.trashTTL = policy.TrashTTL
+	m.settingsMu.Unlock()
+	m.downloadLimiter.setLimit(policy.DownloadConcurrency)
+	return nil
+}
+
+func (m *Manager) tmpTTLDuration() time.Duration {
+	m.settingsMu.RLock()
+	defer m.settingsMu.RUnlock()
+	return m.tmpTTL
+}
+
+func (m *Manager) trashTTLDuration() time.Duration {
+	m.settingsMu.RLock()
+	defer m.settingsMu.RUnlock()
+	return m.trashTTL
+}
+
 func (m *Manager) UpdateSettings(ctx context.Context, settings Settings) (Settings, error) {
 	if err := validateSettings(settings); err != nil {
 		return Settings{}, err
@@ -201,7 +252,7 @@ func (m *Manager) Summary(ctx context.Context) (Summary, error) {
 		Usage:           usage,
 		Disk:            disk,
 		TempBytes:       tempBytes,
-		ActiveDownloads: m.active.Load(),
+		ActiveDownloads: m.downloadLimiter.count(),
 		GC:              m.GCStatus(),
 	}
 	if settings.MaxBytes > 0 {
@@ -310,16 +361,7 @@ func (m *Manager) CanCache(ctx context.Context, required int64) (CacheDecision, 
 }
 
 func (m *Manager) AcquireDownload(ctx context.Context) (func(), error) {
-	select {
-	case m.downloadTokens <- struct{}{}:
-		m.active.Add(1)
-		return func() {
-			m.active.Add(-1)
-			<-m.downloadTokens
-		}, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
+	return m.downloadLimiter.acquire(ctx)
 }
 
 func (m *Manager) Recover(ctx context.Context) error {
@@ -342,10 +384,10 @@ func (m *Manager) Recover(ctx context.Context) error {
 			return err
 		}
 	}
-	if _, err := m.cas.PurgeTrash(time.Now().Add(-m.trashTTL)); err != nil {
+	if _, err := m.cas.PurgeTrash(time.Now().Add(-m.trashTTLDuration())); err != nil {
 		return err
 	}
-	if _, err := m.cas.PurgeTmp(time.Now().Add(-m.tmpTTL)); err != nil {
+	if _, err := m.cas.PurgeTmp(time.Now().Add(-m.tmpTTLDuration())); err != nil {
 		return err
 	}
 	return nil
@@ -406,11 +448,11 @@ func (m *Manager) GC(ctx context.Context, manual bool) (result GCResult, err err
 			}
 		}
 	}
-	result.TrashRemoved, err = m.cas.PurgeTrash(time.Now().Add(-m.trashTTL))
+	result.TrashRemoved, err = m.cas.PurgeTrash(time.Now().Add(-m.trashTTLDuration()))
 	if err != nil {
 		return result, err
 	}
-	result.TmpRemoved, err = m.cas.PurgeTmp(time.Now().Add(-m.tmpTTL))
+	result.TmpRemoved, err = m.cas.PurgeTmp(time.Now().Add(-m.tmpTTLDuration()))
 	if err != nil {
 		return result, err
 	}
@@ -618,11 +660,11 @@ func (m *Manager) Fsck(ctx context.Context, mode string) (FsckResult, error) {
 			return result, err
 		}
 	}
-	result.TmpRemoved, err = m.cas.PurgeTmp(time.Now().Add(-m.tmpTTL))
+	result.TmpRemoved, err = m.cas.PurgeTmp(time.Now().Add(-m.tmpTTLDuration()))
 	if err != nil {
 		return result, err
 	}
-	result.TrashRemoved, err = m.cas.PurgeTrash(time.Now().Add(-m.trashTTL))
+	result.TrashRemoved, err = m.cas.PurgeTrash(time.Now().Add(-m.trashTTLDuration()))
 	if err != nil {
 		return result, err
 	}

@@ -140,7 +140,7 @@ func (h *Handler) createUpload(r *http.Request, repositoryID int64, userID strin
 		_ = h.CAS.DeleteUpload(uploadID)
 		return "", err
 	}
-	ttl := h.UploadTTL
+	ttl := h.limits().UploadTTL
 	if ttl <= 0 {
 		ttl = 24 * time.Hour
 	}
@@ -305,7 +305,7 @@ func (h *Handler) appendRequestBody(w http.ResponseWriter, r *http.Request, repo
 			return false
 		}
 	}
-	limit := h.MaxBlobBytes
+	limit := h.limits().MaxBlobBytes
 	if limit <= 0 {
 		limit = 20 << 30
 	}

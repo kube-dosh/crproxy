@@ -154,7 +154,7 @@ func (s *Store) RepositoryTags(ctx context.Context, repositoryID int64, staleBef
 		return nil, err
 	}
 	defer rows.Close()
-	var result []TagSummary
+	result := make([]TagSummary, 0)
 	for rows.Next() {
 		var item TagSummary
 		var checked, used int64
@@ -280,7 +280,7 @@ func (s *Store) AllContents(ctx context.Context) ([]ContentEntry, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var result []ContentEntry
+	result := make([]ContentEntry, 0)
 	for rows.Next() {
 		var item ContentEntry
 		var created, used int64
@@ -395,7 +395,7 @@ func (s *Store) BreakdownByUpstream(ctx context.Context) ([]Breakdown, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var result []Breakdown
+	result := make([]Breakdown, 0)
 	for rows.Next() {
 		var item Breakdown
 		if err := rows.Scan(&item.Key, &item.Name, &item.Bytes, &item.RepositoryCount, &item.ContentCount); err != nil {
@@ -419,7 +419,7 @@ func (s *Store) BreakdownByRepository(ctx context.Context, kind string) ([]Break
 		return nil, err
 	}
 	defer rows.Close()
-	var result []Breakdown
+	result := make([]Breakdown, 0)
 	for rows.Next() {
 		var item Breakdown
 		if err := rows.Scan(&item.Key, &item.Name, &item.Kind, &item.Bytes, &item.RepositoryCount, &item.ContentCount); err != nil {
@@ -450,7 +450,7 @@ func (s *Store) OrphanContents(ctx context.Context, limit int) ([]ContentEntry, 
 		return nil, err
 	}
 	defer rows.Close()
-	var result []ContentEntry
+	result := make([]ContentEntry, 0)
 	for rows.Next() {
 		var item ContentEntry
 		var created, used int64
@@ -498,7 +498,7 @@ func (s *Store) CacheEvictionCandidates(ctx context.Context, limit int) ([]Cache
 		return nil, err
 	}
 	defer rows.Close()
-	var result []CacheEvictionCandidate
+	result := make([]CacheEvictionCandidate, 0)
 	for rows.Next() {
 		var item CacheEvictionCandidate
 		var used int64
@@ -569,7 +569,7 @@ func (s *Store) ResetDeletingContents(ctx context.Context) ([]string, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var digests []string
+	digests := make([]string, 0)
 	for rows.Next() {
 		var digest string
 		if err := rows.Scan(&digest); err != nil {
@@ -609,7 +609,7 @@ func (s *Store) ListUploads(ctx context.Context, activeOnly bool, limit int) ([]
 		limit = 100
 	}
 	query := `SELECT u.id, u.repo_id, COALESCE(r.upstream_id || '/', '') || r.name,
-	                 u.user_id, COALESCE(us.username, ''), u.size, u.state, u.created_at, u.updated_at, u.expires_at
+	                 COALESCE(u.user_id, ''), COALESCE(us.username, ''), u.size, u.state, u.created_at, u.updated_at, u.expires_at
 	          FROM uploads u LEFT JOIN repositories r ON r.id=u.repo_id LEFT JOIN users us ON us.id=u.user_id`
 	args := []any{}
 	if activeOnly {
@@ -623,7 +623,7 @@ func (s *Store) ListUploads(ctx context.Context, activeOnly bool, limit int) ([]
 		return nil, err
 	}
 	defer rows.Close()
-	var result []UploadSummary
+	result := make([]UploadSummary, 0)
 	for rows.Next() {
 		var item UploadSummary
 		var created, updated, expires int64
@@ -640,12 +640,12 @@ func (s *Store) ListUploads(ctx context.Context, activeOnly bool, limit int) ([]
 }
 
 func (s *Store) UploadOwner(ctx context.Context, uploadID string) (string, error) {
-	var owner string
+	var owner sql.NullString
 	err := s.DB.QueryRowContext(ctx, `SELECT user_id FROM uploads WHERE id = ?`, uploadID).Scan(&owner)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", ErrNotFound
 	}
-	return owner, err
+	return owner.String, err
 }
 
 func escapeLike(value string) string {

@@ -5,11 +5,15 @@ info:
   description: |
     Management API for crproxy. Registry traffic uses the OCI Distribution API at
     `/v2/` and is documented separately in `registry-protocol-design.md`.
-    Browser sessions use an HttpOnly cookie and require `X-CSRF-Token` on
-    state-changing requests. PATs use `Authorization: Bearer <token>`.
+    The management plane is browser-session-only: it uses an HttpOnly cookie and
+    requires `X-CSRF-Token` on state-changing requests. Basic and Bearer PAT
+    credentials are reserved for the Distribution plane at `/v2/` and `/v2/token`,
+    and are never accepted by `/api/v1/`.
 servers:
   - url: http://localhost:5000
-    description: Local default
+    description: Local default (management and registry share the listener)
+  - url: http://localhost:5443
+    description: Management plane when server.admin.listen is separately configured
 tags:
   - name: Auth
   - name: System
@@ -22,7 +26,6 @@ tags:
   - name: Audit
 security:
   - cookieAuth: []
-  - bearerAuth: []
 paths:
   /api/v1/auth/login:
     post:
@@ -89,6 +92,84 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+  /api/v1/settings/runtime:
+    get:
+      tags: [Configuration]
+      summary: Read the effective runtime configuration snapshot and section versions
+      responses:
+        '200':
+          description: Effective configuration without outbound proxy password
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RuntimeConfig'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /api/v1/settings/runtime/{section}:
+    parameters: [{$ref: '#/components/parameters/RuntimeSection'}]
+    put:
+      tags: [Configuration]
+      summary: Update one runtime configuration section with optimistic locking
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - type: object
+                  required: [expectedVersion]
+                  properties:
+                    expectedVersion: {type: integer, minimum: 0}
+                - type: object
+                  additionalProperties: true
+      responses:
+        '200':
+          description: Updated effective configuration
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RuntimeConfig'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/v1/settings/runtime/{section}/reset:
+    parameters: [{$ref: '#/components/parameters/RuntimeSection'}]
+    post:
+      tags: [Configuration]
+      summary: Remove a runtime override and restore the YAML/environment baseline
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expectedVersion]
+              properties:
+                expectedVersion: {type: integer, minimum: 0}
+      responses:
+        '200':
+          description: Updated effective configuration
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RuntimeConfig'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/v1/settings/runtime/outbound-proxy/test:
+    post:
+      tags: [Configuration]
+      summary: Test the effective outbound proxy against an HTTP(S) URL
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url: {type: string, format: uri}
+      responses:
+        '200': {$ref: '#/components/responses/Object'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '502': {$ref: '#/components/responses/Object'}
   /api/v1/overview:
     get:
       tags: [System]
@@ -543,11 +624,8 @@ components:
     cookieAuth:
       type: apiKey
       in: cookie
-      name: crproxy_session
-    bearerAuth:
-      type: http
-      scheme: bearer
-      description: PAT created through /api/v1/tokens
+      name: crp_session
+      description: HTTP uses `crp_session`; HTTPS uses the `__Host-crp_session` variant.
   parameters:
     CSRF:
       name: X-CSRF-Token
@@ -570,6 +648,13 @@ components:
       in: path
       required: true
       schema: {type: string}
+    RuntimeSection:
+      name: section
+      in: path
+      required: true
+      schema:
+        type: string
+        enum: [registry-auth, web-session, storage, uploads, audit, proxy, outbound-proxy, security]
   schemas:
     Error:
       type: object
@@ -598,7 +683,7 @@ components:
       properties:
         user: {$ref: '#/components/schemas/User'}
         csrfToken: {type: string}
-        authMode: {type: string, enum: [session, pat]}
+        authMode: {type: string, enum: [session]}
     StorageSettings:
       type: object
       required: [maxBytes, cacheMaxBytes, minFreeBytes, highWatermark, lowWatermark, onFull]
@@ -609,6 +694,38 @@ components:
         highWatermark: {type: number, exclusiveMinimum: 0, maximum: 1}
         lowWatermark: {type: number, exclusiveMinimum: 0, exclusiveMaximum: 1}
         onFull: {type: string, enum: [bypass, reject]}
+    RuntimeConfig:
+      type: object
+      additionalProperties: true
+      required: [registryAuth, webSession, storage, uploads, audit, proxy, outboundProxy, security, startup, sections]
+      properties:
+        registryAuth: {type: object, additionalProperties: true}
+        webSession: {type: object, additionalProperties: true}
+        storage: {type: object, additionalProperties: true}
+        uploads: {type: object, additionalProperties: true}
+        audit: {type: object, additionalProperties: true}
+        proxy: {type: object, additionalProperties: true}
+        outboundProxy:
+          type: object
+          properties:
+            httpProxy: {type: string}
+            httpsProxy: {type: string}
+            noProxy: {type: string}
+            username: {type: string}
+            passwordConfigured: {type: boolean}
+            passwordSource: {type: string, enum: [none, startup, runtime]}
+        security: {type: object, additionalProperties: true}
+        startup: {type: object, additionalProperties: true}
+        sections:
+          type: object
+          additionalProperties:
+            type: object
+            required: [version, source]
+            properties:
+              version: {type: integer, minimum: 0}
+              updatedAt: {type: string, format: date-time}
+              updatedBy: {type: string}
+              source: {type: string, enum: [startup, runtime]}
     UpstreamCredentials:
       type: object
       properties:

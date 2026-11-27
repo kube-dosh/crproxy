@@ -29,6 +29,7 @@ import (
 	"crproxy/internal/proxy"
 	"crproxy/internal/registry"
 	"crproxy/internal/requestinfo"
+	"crproxy/internal/runtimeconfig"
 	"crproxy/internal/secretbox"
 	"crproxy/internal/storage"
 	"crproxy/internal/store"
@@ -116,72 +117,69 @@ func run(args []string) error {
 	if err := bootstrapAdmin(ctx, metadata, cfg, logger); err != nil {
 		return err
 	}
+	masterKeyPath := cfg.Auth.MasterKeyFile
+	if masterKeyPath == "" {
+		masterKeyPath = filepath.Join(root, "meta", "master.key")
+	}
+	masterKeyring, err := secretbox.LoadOrCreateKeyring(masterKeyPath)
+	if err != nil {
+		return fmt.Errorf("load upstream master key: %w", err)
+	}
+	runtimeManager, err := runtimeconfig.New(ctx, metadata, runtimeBaseFromConfig(cfg, root), masterKeyring)
+	if err != nil {
+		return fmt.Errorf("load runtime configuration: %w", err)
+	}
+	runtimeCurrent := runtimeManager.Current()
+	if runtimeCurrent == nil {
+		return errors.New("runtime configuration is not initialized")
+	}
 	secret, err := loadJWTSecret(cfg, root)
 	if err != nil {
 		return err
 	}
-	ttl, err := cfg.TokenTTL()
-	if err != nil {
-		return err
-	}
-	signer, err := auth.NewSigner(secret, "crproxy", cfg.Auth.Registry.Service, ttl)
+	signer, err := auth.NewSigner(secret, "crproxy", runtimeCurrent.RegistryAuth.Service, runtimeCurrent.TokenTTLDuration())
 	if err != nil {
 		return err
 	}
 	authenticator := &auth.Authenticator{
-		Store:          metadata,
-		Signer:         signer,
-		Realm:          cfg.Realm(),
-		Service:        cfg.Auth.Registry.Service,
-		ChallengeMode:  cfg.Auth.Registry.Challenge,
-		AllowAnonymous: cfg.Auth.Registry.AllowAnonymous,
-		DummyHash:      auth.DummyPasswordHash(),
+		Store:            metadata,
+		Signer:           signer,
+		Realm:            runtimeCurrent.RegistryAuth.Realm,
+		Service:          runtimeCurrent.RegistryAuth.Service,
+		ChallengeMode:    runtimeCurrent.RegistryAuth.Challenge,
+		AllowAnonymous:   runtimeCurrent.RegistryAuth.AllowAnonymous,
+		AnonymousActions: append([]string(nil), runtimeCurrent.RegistryAuth.AnonymousActions...),
+		DummyHash:        auth.DummyPasswordHash(),
 	}
-	webSessionTTL, err := cfg.WebSessionTTL()
+	webSessionTTL, webIdleTimeout := runtimeCurrent.WebSessionDurations()
+	registryResolver, err := requestinfo.New(cfg.Server.TrustedProxies, cfg.PublicScheme())
 	if err != nil {
-		return err
+		return fmt.Errorf("initialize registry request origin resolver: %w", err)
 	}
-	webIdleTimeout, err := cfg.WebIdleTimeout()
+	adminResolver, err := requestinfo.New(cfg.Server.TrustedProxies, cfg.AdminPublicScheme())
 	if err != nil {
-		return err
+		return fmt.Errorf("initialize management request origin resolver: %w", err)
 	}
-	resolver, err := requestinfo.New(cfg.Server.TrustedProxies, cfg.PublicScheme())
-	if err != nil {
-		return fmt.Errorf("initialize request origin resolver: %w", err)
-	}
-	secureCookies := cfg.PublicScheme() == "https"
+	secureCookies := cfg.AdminPublicScheme() == "https"
 	if !secureCookies {
 		logger.Warn("management sessions use a non-Secure cookie because HTTP is enabled; terminate TLS before production use")
 	}
-	uploadTTL, err := cfg.UploadTTL()
-	if err != nil {
-		return err
-	}
-	tmpTTL, err := cfg.Duration("storage.tmp_ttl", cfg.Storage.TmpTTL)
-	if err != nil {
-		return err
-	}
-	trashTTL, err := cfg.Duration("storage.trash_ttl", cfg.Storage.TrashTTL)
-	if err != nil {
-		return err
-	}
-	auditRetention, err := cfg.Duration("storage.audit_retention", cfg.Storage.AuditRetention)
-	if err != nil {
-		return err
-	}
+	uploadTTL := runtimeCurrent.UploadTTLDuration()
+	tmpTTL, trashTTL := runtimeCurrent.StorageDurations()
+	auditRetention := runtimeCurrent.AuditRetentionDuration()
 	storageManager, err := storage.New(metadata, casStore, storage.Config{
 		Root: root,
 		Settings: storage.Settings{
-			MaxBytes:      cfg.Storage.MaxBytes,
-			CacheMaxBytes: cfg.Storage.CacheMaxBytes,
-			MinFreeBytes:  cfg.Storage.MinFreeBytes,
-			HighWatermark: cfg.Storage.HighWatermark,
-			LowWatermark:  cfg.Storage.LowWatermark,
-			OnFull:        cfg.Storage.OnFull,
+			MaxBytes:      runtimeCurrent.Storage.MaxBytes,
+			CacheMaxBytes: runtimeCurrent.Storage.CacheMaxBytes,
+			MinFreeBytes:  runtimeCurrent.Storage.MinFreeBytes,
+			HighWatermark: runtimeCurrent.Storage.HighWatermark,
+			LowWatermark:  runtimeCurrent.Storage.LowWatermark,
+			OnFull:        runtimeCurrent.Storage.OnFull,
 		},
 		TmpTTL:              tmpTTL,
 		TrashTTL:            trashTTL,
-		DownloadConcurrency: cfg.Storage.DownloadConcurrency,
+		DownloadConcurrency: runtimeCurrent.Storage.DownloadConcurrency,
 	}, logger)
 	if err != nil {
 		return err
@@ -200,29 +198,24 @@ func run(args []string) error {
 		Store:            metadata,
 		CAS:              casStore,
 		Auth:             authenticator,
-		MaxManifestBytes: cfg.Storage.MaxManifestBytes,
-		MaxBlobBytes:     cfg.Storage.MaxBlobBytes,
+		MaxManifestBytes: runtimeCurrent.Storage.MaxManifestBytes,
+		MaxBlobBytes:     runtimeCurrent.Storage.MaxBlobBytes,
 		UploadTTL:        uploadTTL,
 		Storage:          storageManager,
 		Logger:           logger,
 	}
 	tokenHandler := &registry.TokenHandler{Auth: authenticator, Logger: logger}
-	proxyHandler, err := proxy.NewHandler(registryHandler, metadata, casStore, authenticator, nil, cfg.Proxy.PathPrefix, cfg.Storage.MaxManifestBytes, logger)
+	proxyHandler, err := proxy.NewHandler(registryHandler, metadata, casStore, authenticator, nil, cfg.Proxy.PathPrefix, runtimeCurrent.Storage.MaxManifestBytes, logger)
 	if err != nil {
 		return err
 	}
 	proxyHandler.Storage = storageManager
-	masterKeyPath := cfg.Auth.MasterKeyFile
-	if masterKeyPath == "" {
-		masterKeyPath = filepath.Join(root, "meta", "master.key")
-	}
-	masterKeyring, err := secretbox.LoadOrCreateKeyring(masterKeyPath)
-	if err != nil {
-		return fmt.Errorf("load upstream master key: %w", err)
-	}
 	upstreamManager, err := upstreammgr.NewWithKeyProvider(metadata, proxyHandler, masterKeyring, logger)
 	if err != nil {
 		return err
+	}
+	if err := upstreamManager.SetOutboundProxy(outboundProxyFromRuntime(runtimeCurrent.Outbound)); err != nil {
+		return fmt.Errorf("configure outbound proxy: %w", err)
 	}
 	if err := seedUpstreams(ctx, upstreamManager, cfg); err != nil {
 		return err
@@ -230,7 +223,7 @@ func run(args []string) error {
 	if err := upstreamManager.Reload(ctx); err != nil {
 		return fmt.Errorf("load upstreams: %w", err)
 	}
-	adminAPI, err := adminapi.NewHandler(metadata, authenticator, adminapi.Config{
+	adminAPI, err := adminapi.NewHandler(metadata, adminapi.Config{
 		CSRFSecret:      secret,
 		SessionTTL:      webSessionTTL,
 		SessionIdleTTL:  webIdleTimeout,
@@ -242,33 +235,74 @@ func run(args []string) error {
 		Storage:         storageManager,
 		CAS:             casStore,
 		AuditRetention:  auditRetention,
-		RequestInfo:     resolver,
-		PublicURL:       cfg.PublicScheme() + "://" + cfg.Server.PublicHost,
+		RequestInfo:     adminResolver,
+		PublicURL:       cfg.AdminPublicURL(),
+		RegistryURL:     cfg.RegistryPublicURL(),
+		DeploymentMode:  cfg.ListenerMode(),
+		RegistryListen:  cfg.Server.Listen,
+		AdminListen:     cfg.AdminListen(),
 		ProxyPathPrefix: cfg.Proxy.PathPrefix,
-		AllowAnonymous:  cfg.Auth.Registry.AllowAnonymous,
+		AllowAnonymous:  runtimeCurrent.RegistryAuth.AllowAnonymous,
+		Runtime:         runtimeManager,
 	}, logger)
 	if err != nil {
 		return err
 	}
+	runtimeManager.SetApply(func(current runtimeconfig.Config) {
+		if err := authenticator.ApplyPolicy(auth.RegistryPolicy{
+			Realm:            current.RegistryAuth.Realm,
+			Service:          current.RegistryAuth.Service,
+			ChallengeMode:    current.RegistryAuth.Challenge,
+			AllowAnonymous:   current.RegistryAuth.AllowAnonymous,
+			AnonymousActions: current.RegistryAuth.AnonymousActions,
+			TokenTTL:         current.TokenTTLDuration(),
+		}); err != nil {
+			logger.Error("apply registry auth policy failed", "error", err)
+		}
+		registryHandler.ApplyRuntimeLimits(registry.RuntimeLimits{
+			MaxManifestBytes: current.Storage.MaxManifestBytes,
+			MaxBlobBytes:     current.Storage.MaxBlobBytes,
+			UploadTTL:        current.UploadTTLDuration(),
+		})
+		proxyHandler.ApplyMaxManifestBytes(current.Storage.MaxManifestBytes)
+		tmpTTL, trashTTL := current.StorageDurations()
+		if err := storageManager.ApplyPolicy(storage.Policy{
+			Settings: storage.Settings{
+				MaxBytes:      current.Storage.MaxBytes,
+				CacheMaxBytes: current.Storage.CacheMaxBytes,
+				MinFreeBytes:  current.Storage.MinFreeBytes,
+				HighWatermark: current.Storage.HighWatermark,
+				LowWatermark:  current.Storage.LowWatermark,
+				OnFull:        current.Storage.OnFull,
+			},
+			TmpTTL:              tmpTTL,
+			TrashTTL:            trashTTL,
+			DownloadConcurrency: current.Storage.DownloadConcurrency,
+		}); err != nil {
+			logger.Error("apply storage runtime policy failed", "error", err)
+		}
+		if err := upstreamManager.SetOutboundProxy(outboundProxyFromRuntime(current.Outbound)); err != nil {
+			logger.Error("apply outbound proxy policy failed", "error", err)
+		}
+	})
 	metricsCollector, err := observability.New(metadata, storageManager, upstreamManager, version, startedAt)
 	if err != nil {
 		return fmt.Errorf("initialize metrics collector: %w", err)
 	}
-	var registryFrontend http.Handler = registryHandler
-	if !cfg.Proxy.Disabled {
-		registryFrontend = proxyHandler
-	}
-	mux := http.NewServeMux()
-	mux.Handle("/v2/token", tokenHandler)
-	mux.Handle("/v2/", registryFrontend)
-	mux.Handle("/api/v1/", adminAPI)
-	mux.HandleFunc("GET /api/v1/healthz", func(w http.ResponseWriter, r *http.Request) {
+	registryFrontend := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if current := runtimeManager.Current(); current != nil && current.Proxy.Disabled {
+			registryHandler.ServeHTTP(w, r)
+			return
+		}
+		proxyHandler.ServeHTTP(w, r)
+	})
+	healthzHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok","version":"` + version + `"}`))
 	})
-	mux.HandleFunc("GET /api/v1/readyz", func(w http.ResponseWriter, r *http.Request) {
+	readyzHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, readyCancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer readyCancel()
 		w.Header().Set("Content-Type", "application/json")
@@ -286,65 +320,159 @@ func run(args []string) error {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ready","version":"` + version + `"}`))
 	})
-	mux.Handle("/metrics", metricsCollector)
-	mux.Handle("/", web.Handler())
-
-	server := &http.Server{
-		Addr:              cfg.Server.Listen,
-		Handler:           recoverMiddleware(logger, requestLogMiddleware(logger, securityHeadersMiddleware(resolver, cfg.Server.TLS.HSTS, metricsCollector.Instrument(mux)))),
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       2 * time.Minute,
-		MaxHeaderBytes:    1 << 20,
+	registerRegistryRoutes := func(mux *http.ServeMux) {
+		// Distribution plane: Authorization-based registry authentication only.
+		mux.Handle("/v2/token", tokenHandler)
+		mux.Handle("/v2/", registryFrontend)
+		mux.Handle("GET /healthz", healthzHandler)
+		mux.Handle("GET /readyz", readyzHandler)
 	}
+	registerManagementRoutes := func(mux *http.ServeMux, includeOperationalEndpoints bool) {
+		// Management plane: the admin API owns its HttpOnly cookie session boundary.
+		mux.Handle("/api/v1/", adminAPI)
+		mux.Handle("GET /api/v1/healthz", healthzHandler)
+		mux.Handle("GET /api/v1/readyz", readyzHandler)
+		mux.Handle("/metrics", metricsCollector)
+		if includeOperationalEndpoints {
+			mux.Handle("GET /healthz", healthzHandler)
+			mux.Handle("GET /readyz", readyzHandler)
+		}
+		mux.Handle("/", web.Handler())
+	}
+	hstsEnabled := func() bool {
+		current := runtimeManager.Current()
+		return current != nil && current.Security.HSTS
+	}
+	wrapPlane := func(name string, resolver *requestinfo.Resolver, next http.Handler) http.Handler {
+		planeLogger := logger.With("plane", name)
+		handler := metricsCollector.Instrument(next)
+		handler = securityHeadersMiddleware(resolver, hstsEnabled, handler)
+		handler = requestLogMiddleware(planeLogger, handler)
+		return recoverMiddleware(planeLogger, handler)
+	}
+
+	type listenerSpec struct {
+		name    string
+		listen  string
+		handler http.Handler
+		tls     config.TLSConfig
+	}
+	var specs []listenerSpec
+	if cfg.AdminSeparate() {
+		registryMux := http.NewServeMux()
+		registerRegistryRoutes(registryMux)
+		managementMux := http.NewServeMux()
+		registerManagementRoutes(managementMux, true)
+		specs = []listenerSpec{
+			{name: "registry", listen: cfg.Server.Listen, handler: wrapPlane("registry", registryResolver, registryMux), tls: cfg.Server.TLS},
+			{name: "management", listen: cfg.AdminListen(), handler: wrapPlane("management", adminResolver, managementMux), tls: cfg.AdminTLS()},
+		}
+	} else {
+		mux := http.NewServeMux()
+		registerRegistryRoutes(mux)
+		registerManagementRoutes(mux, false)
+		specs = []listenerSpec{
+			{name: "shared", listen: cfg.Server.Listen, handler: wrapPlane("shared", registryResolver, mux), tls: cfg.Server.TLS},
+		}
+	}
+
 	runCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-	listener, err := net.Listen("tcp", cfg.Server.Listen)
-	if err != nil {
-		return fmt.Errorf("listen on %s: %w", cfg.Server.Listen, err)
-	}
-	defer listener.Close()
 	go cleanupUploads(runCtx, metadata, casStore, logger)
 	go cleanupSessions(runCtx, metadata, logger)
-	go storageMaintenance(runCtx, storageManager, auditRetention, logger)
+	go storageMaintenance(runCtx, storageManager, func() time.Duration {
+		if current := runtimeManager.Current(); current != nil {
+			return current.AuditRetentionDuration()
+		}
+		return auditRetention
+	}, logger)
+
+	servers := make([]*http.Server, len(specs))
+	listeners := make([]net.Listener, len(specs))
+	for i, spec := range specs {
+		server := &http.Server{
+			Addr:              spec.listen,
+			Handler:           spec.handler,
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       2 * time.Minute,
+			MaxHeaderBytes:    1 << 20,
+		}
+		listener, listenErr := net.Listen("tcp", spec.listen)
+		if listenErr != nil {
+			for j := 0; j < i; j++ {
+				_ = listeners[j].Close()
+			}
+			return fmt.Errorf("listen on %s plane %s: %w", spec.listen, spec.name, listenErr)
+		}
+		servers[i] = server
+		listeners[i] = listener
+	}
+	defer func() {
+		for _, listener := range listeners {
+			_ = listener.Close()
+		}
+	}()
 	go func() {
 		<-runCtx.Done()
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer shutdownCancel()
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			logger.Error("graceful shutdown failed", "error", err)
+		for index, server := range servers {
+			if err := server.Shutdown(shutdownCtx); err != nil {
+				logger.Error("graceful shutdown failed", "plane", specs[index].name, "error", err)
+			}
 		}
 	}()
 
 	logger.Info("crproxy starting",
 		"version", version,
-		"listen", cfg.Server.Listen,
-		"public_host", cfg.Server.PublicHost,
+		"plane_mode", cfg.ListenerMode(),
+		"registry_listen", cfg.Server.Listen,
+		"management_listen", cfg.AdminListen(),
+		"registry_url", cfg.RegistryPublicURL(),
+		"management_url", cfg.AdminPublicURL(),
 		"storage_root", root,
-		"tls", cfg.Server.TLS.Mode,
-		"public_scheme", cfg.PublicScheme(),
 		"trusted_proxies", len(cfg.Server.TrustedProxies),
-		"allow_anonymous", cfg.Auth.Registry.AllowAnonymous,
+		"allow_anonymous", runtimeCurrent.RegistryAuth.AllowAnonymous,
+		"outbound_proxy_http", runtimeCurrent.Outbound.HTTPProxy != "",
+		"outbound_proxy_https", runtimeCurrent.Outbound.HTTPSProxy != "",
 		"upstreams", len(cfg.Upstreams),
 		"master_key", masterKeyPath,
 		"master_key_version", masterKeyring.CurrentVersion(),
 	)
-	switch cfg.Server.TLS.Mode {
-	case "":
-		err = server.Serve(listener)
-	case "file":
-		reloader, reloadErr := tlsutil.NewReloader(cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile, logger)
-		if reloadErr != nil {
-			return reloadErr
+	for _, spec := range specs {
+		logger.Info("crproxy plane listening", "plane", spec.name, "listen", spec.listen, "tls", spec.tls.Mode)
+	}
+	errCh := make(chan error, len(specs))
+	for index := range specs {
+		go func(index int) {
+			spec := specs[index]
+			server := servers[index]
+			listener := listeners[index]
+			switch spec.tls.Mode {
+			case "":
+				errCh <- server.Serve(listener)
+			case "file":
+				reloader, reloadErr := tlsutil.NewReloader(spec.tls.CertFile, spec.tls.KeyFile, logger.With("plane", spec.name))
+				if reloadErr != nil {
+					errCh <- fmt.Errorf("%s plane TLS: %w", spec.name, reloadErr)
+					return
+				}
+				go reloader.Run(runCtx, time.Duration(spec.tls.ReloadSeconds)*time.Second)
+				errCh <- server.Serve(tls.NewListener(listener, reloader.Config(tlsMinVersion(spec.tls.MinVersion))))
+			default:
+				errCh <- fmt.Errorf("unsupported TLS mode %q for %s plane", spec.tls.Mode, spec.name)
+			}
+		}(index)
+	}
+	var serveErr error
+	for range specs {
+		serveResult := <-errCh
+		if serveResult != nil && !errors.Is(serveResult, http.ErrServerClosed) && serveErr == nil {
+			serveErr = serveResult
+			cancel()
 		}
-		go reloader.Run(runCtx, time.Duration(cfg.Server.TLS.ReloadSeconds)*time.Second)
-		err = server.Serve(tls.NewListener(listener, reloader.Config(tlsMinVersion(cfg.Server.TLS.MinVersion))))
-	default:
-		return fmt.Errorf("unsupported server.tls.mode %q", cfg.Server.TLS.Mode)
 	}
-	if errors.Is(err, http.ErrServerClosed) {
-		return nil
-	}
-	return err
+	return serveErr
 }
 
 func runBackup(args []string) error {
@@ -459,7 +587,7 @@ func runRotateMasterKey(args []string) error {
 func runHealthcheck(args []string) error {
 	flags := flag.NewFlagSet("crproxy healthcheck", flag.ContinueOnError)
 	configPath := flags.String("config", "", "path to crproxy YAML configuration")
-	endpoint := flags.String("url", "", "readiness endpoint (default: <public scheme>://<public host>/api/v1/readyz)")
+	endpoint := flags.String("url", "", "readiness endpoint (default: <registry public URL>/readyz)")
 	timeout := flags.Duration("timeout", 5*time.Second, "request timeout")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -473,7 +601,7 @@ func runHealthcheck(args []string) error {
 		if err != nil {
 			return err
 		}
-		target = cfg.PublicScheme() + "://" + cfg.Server.PublicHost + "/api/v1/readyz"
+		target = cfg.RegistryPublicURL() + "/readyz"
 	}
 	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, target, nil)
 	if err != nil {
@@ -508,13 +636,13 @@ func tlsMinVersion(value string) uint16 {
 	return tls.VersionTLS12
 }
 
-func securityHeadersMiddleware(resolver *requestinfo.Resolver, hsts bool, next http.Handler) http.Handler {
+func securityHeadersMiddleware(resolver *requestinfo.Resolver, hsts func() bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-		if hsts && resolver.Scheme(r) == "https" {
+		if hsts != nil && hsts() && resolver.Scheme(r) == "https" {
 			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		}
 		next.ServeHTTP(w, r)
@@ -650,6 +778,83 @@ func loadJWTSecret(cfg config.Config, root string) ([]byte, error) {
 	return secret, nil
 }
 
+func runtimeBaseFromConfig(cfg config.Config, root string) runtimeconfig.Base {
+	outbound := runtimeconfig.OutboundProxy{}
+	if cfg.OutboundProxy != nil {
+		outbound = runtimeconfig.OutboundProxy{
+			HTTPProxy:  cfg.OutboundProxy.HTTPProxy,
+			HTTPSProxy: cfg.OutboundProxy.HTTPSProxy,
+			NoProxy:    cfg.OutboundProxy.NoProxy,
+			Username:   cfg.OutboundProxy.Username,
+			Password:   cfg.OutboundProxy.Password,
+		}
+	}
+	return runtimeconfig.Base{
+		RegistryAuth: runtimeconfig.RegistryAuth{
+			Challenge:        cfg.Auth.Registry.Challenge,
+			Service:          cfg.Auth.Registry.Service,
+			Realm:            cfg.Realm(),
+			AllowAnonymous:   cfg.Auth.Registry.AllowAnonymous,
+			AnonymousActions: cfg.Auth.Registry.AnonymousActions,
+			TokenTTL:         cfg.Auth.Registry.TokenTTL,
+		},
+		WebSession: runtimeconfig.WebSession{
+			SessionTTL:  cfg.Auth.Web.SessionTTL,
+			IdleTimeout: cfg.Auth.Web.IdleTimeout,
+		},
+		Storage: runtimeconfig.Storage{
+			MaxBytes:            cfg.Storage.MaxBytes,
+			CacheMaxBytes:       cfg.Storage.CacheMaxBytes,
+			MinFreeBytes:        cfg.Storage.MinFreeBytes,
+			HighWatermark:       cfg.Storage.HighWatermark,
+			LowWatermark:        cfg.Storage.LowWatermark,
+			OnFull:              cfg.Storage.OnFull,
+			MaxBlobBytes:        cfg.Storage.MaxBlobBytes,
+			MaxManifestBytes:    cfg.Storage.MaxManifestBytes,
+			DownloadConcurrency: cfg.Storage.DownloadConcurrency,
+			TmpTTL:              cfg.Storage.TmpTTL,
+			TrashTTL:            cfg.Storage.TrashTTL,
+		},
+		Uploads:  runtimeconfig.Uploads{UploadsTTL: cfg.Storage.UploadTTL},
+		Audit:    runtimeconfig.Audit{AuditRetention: cfg.Storage.AuditRetention},
+		Proxy:    runtimeconfig.Proxy{Disabled: cfg.Proxy.Disabled},
+		Outbound: outbound,
+		Security: runtimeconfig.Security{HSTS: cfg.Server.TLS.HSTS},
+		Startup: runtimeconfig.Startup{
+			Listen:                   cfg.Server.Listen,
+			PublicHost:               cfg.Server.PublicHost,
+			PublicScheme:             cfg.PublicScheme(),
+			RegistryURL:              cfg.RegistryPublicURL(),
+			AdminListen:              cfg.AdminListen(),
+			AdminPublicHost:          cfg.AdminPublicHost(),
+			AdminPublicScheme:        cfg.AdminPublicScheme(),
+			AdminURL:                 cfg.AdminPublicURL(),
+			PlaneMode:                cfg.ListenerMode(),
+			TrustedProxies:           append([]string(nil), cfg.Server.TrustedProxies...),
+			TLSMode:                  cfg.Server.TLS.Mode,
+			TLSMinVersion:            cfg.Server.TLS.MinVersion,
+			TLSReloadSeconds:         cfg.Server.TLS.ReloadSeconds,
+			TLSCertificateConfigured: cfg.Server.TLS.CertFile != "",
+			TLSKeyConfigured:         cfg.Server.TLS.KeyFile != "",
+			StorageRoot:              root,
+			ProxyPathPrefix:          cfg.Proxy.PathPrefix,
+			BootstrapAdminUsername:   cfg.Auth.BootstrapAdmin.Username,
+			JWTSecretConfigured:      true,
+			MasterKeyConfigured:      true,
+		},
+	}
+}
+
+func outboundProxyFromRuntime(value runtimeconfig.OutboundProxy) *proxy.OutboundProxy {
+	return &proxy.OutboundProxy{
+		HTTPProxy:  value.HTTPProxy,
+		HTTPSProxy: value.HTTPSProxy,
+		NoProxy:    value.NoProxy,
+		Username:   value.Username,
+		Password:   value.Password,
+	}
+}
+
 func cleanupUploads(ctx context.Context, metadata *store.Store, casStore *cas.Store, logger *slog.Logger) {
 	ticker := time.NewTicker(15 * time.Minute)
 	defer ticker.Stop()
@@ -687,7 +892,7 @@ func cleanupSessions(ctx context.Context, metadata *store.Store, logger *slog.Lo
 	}
 }
 
-func storageMaintenance(ctx context.Context, manager *storage.Manager, auditRetention time.Duration, logger *slog.Logger) {
+func storageMaintenance(ctx context.Context, manager *storage.Manager, auditRetention func() time.Duration, logger *slog.Logger) {
 	gcTicker := time.NewTicker(15 * time.Minute)
 	retentionTicker := time.NewTicker(6 * time.Hour)
 	defer gcTicker.Stop()
@@ -701,7 +906,7 @@ func storageMaintenance(ctx context.Context, manager *storage.Manager, auditRete
 				logger.Warn("background storage GC failed", "error", err)
 			}
 		case <-retentionTicker.C:
-			if err := manager.EnforceRetention(ctx, auditRetention); err != nil {
+			if err := manager.EnforceRetention(ctx, auditRetention()); err != nil {
 				logger.Warn("enforce event retention failed", "error", err)
 			}
 		}

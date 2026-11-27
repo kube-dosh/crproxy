@@ -35,7 +35,7 @@ func (h *Handler) serveReferrers(w http.ResponseWriter, r *http.Request, upstrea
 		writeUpstreamError(w)
 		return
 	}
-	limit := h.MaxManifestBytes
+	limit := h.maxManifestBytes()
 	if limit <= 0 {
 		limit = 4 << 20
 	}

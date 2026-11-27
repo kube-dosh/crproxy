@@ -61,7 +61,7 @@ func (s *Store) ListJobs(ctx context.Context, limit int) ([]Job, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var result []Job
+	result := make([]Job, 0)
 	for rows.Next() {
 		var job Job
 		var started, finished sql.NullInt64

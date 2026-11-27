@@ -2,8 +2,10 @@ package registry
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -309,6 +311,54 @@ func TestRegistryPushPullDiscoveryAndDelete(t *testing.T) {
 	}
 	if deletedBlob := env.basicRequest(t, http.MethodDelete, "/v2/demo/app/blobs/"+configDigest.String(), nil, "admin", testAdminPassword, nil); deletedBlob.status != http.StatusAccepted {
 		t.Fatalf("unreferenced blob delete failed: status=%d body=%s", deletedBlob.status, deletedBlob.body)
+	}
+}
+
+func TestDistributionIgnoresManagementSessionCookie(t *testing.T) {
+	env := newTestEnv(t)
+	admin, err := env.store.UserByUsername(t.Context(), "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "management-session-must-not-authorize-distribution"
+	now := time.Now().UTC()
+	if err := env.store.CreateSession(t.Context(), fmt.Sprintf("%x", sha256.Sum256([]byte(sessionID))), admin.ID, "csrf-hash", now.Add(time.Hour), now.Add(30*time.Minute), "127.0.0.1", "test"); err != nil {
+		t.Fatal(err)
+	}
+	headers := map[string]string{"Cookie": "crp_session=" + sessionID}
+
+	for _, path := range []string{"/v2/", "/v2/token?service=crproxy&scope=repository:demo/app:pull"} {
+		resp := env.request(t, http.MethodGet, path, nil, headers)
+		if resp.status != http.StatusUnauthorized {
+			t.Fatalf("distribution endpoint %s accepted a management session cookie: status=%d body=%s", path, resp.status, resp.body)
+		}
+		if challenge := resp.header.Get("WWW-Authenticate"); challenge == "" {
+			t.Fatalf("distribution endpoint %s must return its own authentication challenge", path)
+		}
+	}
+}
+
+func TestAnonymousPolicyCanAuthorizePushWithoutToken(t *testing.T) {
+	env := newTestEnv(t)
+	if err := env.auth.ApplyPolicy(auth.RegistryPolicy{
+		Realm:            "http://registry.test",
+		Service:          "crproxy",
+		ChallengeMode:    "bearer",
+		AllowAnonymous:   true,
+		AnonymousActions: []string{"pull", "push"},
+		TokenTTL:         5 * time.Minute,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if base := env.request(t, http.MethodGet, "/v2/", nil, nil); base.status != http.StatusOK {
+		t.Fatalf("anonymous registry base should be available: status=%d body=%s", base.status, base.body)
+	}
+	start := env.request(t, http.MethodPost, "/v2/anon/app/blobs/uploads/", nil, nil)
+	if start.status != http.StatusAccepted {
+		t.Fatalf("anonymous push should start an upload: status=%d body=%s", start.status, start.body)
+	}
+	if catalog := env.request(t, http.MethodGet, "/v2/_catalog", nil, nil); catalog.status != http.StatusUnauthorized {
+		t.Fatalf("anonymous catalog must remain denied unless configured: status=%d body=%s", catalog.status, catalog.body)
 	}
 }
 

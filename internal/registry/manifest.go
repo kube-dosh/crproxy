@@ -82,7 +82,7 @@ func (h *Handler) putManifest(w http.ResponseWriter, r *http.Request, route pars
 		writeRegistryError(w, http.StatusBadRequest, "DIGEST_INVALID", "invalid digest", nil)
 		return
 	}
-	raw, tooLarge, err := readLimited(r.Body, h.MaxManifestBytes)
+	raw, tooLarge, err := readLimited(r.Body, h.limits().MaxManifestBytes)
 	if err != nil {
 		h.internalError(w, err)
 		return

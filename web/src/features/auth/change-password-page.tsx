@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { KeyRound, Loader2, LogOut } from "lucide-react";
-import { api, errorMessage } from "@/api/client";
+import { toast } from "sonner";
+import { api, errorMessage, setCSRFToken } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -31,7 +32,7 @@ export function ChangePasswordPage({ initial = false }: { initial?: boolean }) {
             <div className="space-y-1.5"><Label htmlFor="confirm-password">确认新密码</Label><Input id="confirm-password" type="password" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></div>
             {mismatch ? <p className="text-sm text-destructive">两次输入的新密码不一致</p> : null}
             {mutation.error ? <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{errorMessage(mutation.error)}</div> : null}
-            <div className="flex flex-wrap gap-2"><Button type="submit" disabled={mutation.isPending || newPassword.length < 12 || mismatch}>{mutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <KeyRound className="h-4 w-4" />}更新密码</Button>{!initial ? <Button type="button" variant="outline" onClick={async () => { await api.logout().catch(() => undefined); queryClient.clear(); navigate("/login", { replace: true }); }}><LogOut className="h-4 w-4" />退出登录</Button> : null}</div>
+            <div className="flex flex-wrap gap-2"><Button type="submit" disabled={mutation.isPending || newPassword.length < 12 || mismatch}>{mutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <KeyRound className="h-4 w-4" />}更新密码</Button>{!initial ? <Button type="button" variant="outline" onClick={async () => { try { await api.logout(); setCSRFToken(""); window.location.replace("/login"); } catch (error) { toast.error(`退出登录失败：${errorMessage(error)}`); } }}><LogOut className="h-4 w-4" />退出登录</Button> : null}</div>
           </form>
         </CardContent>
       </Card>

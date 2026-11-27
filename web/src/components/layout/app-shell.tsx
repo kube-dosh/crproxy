@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { useQueryClient } from "@tanstack/react-query";
-import { Activity, Boxes, ChevronsLeft, ChevronsRight, Database, HardDrive, Info, KeyRound, Layers3, LayoutDashboard, LogOut, Menu, Moon, ScrollText, Settings2, Sun, UploadCloud, Users, X, type LucideIcon } from "lucide-react";
-import { api } from "@/api/client";
+import { Activity, Boxes, ChevronsLeft, ChevronsRight, Database, HardDrive, Info, KeyRound, Layers3, LayoutDashboard, Loader2, LogOut, Menu, Moon, ScrollText, Settings2, Sun, UploadCloud, Users, X, type LucideIcon } from "lucide-react";
+import { toast } from "sonner";
+import { api, errorMessage, setCSRFToken } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useSessionQuery } from "@/features/auth/use-session";
@@ -21,7 +21,7 @@ const primaryNav: NavItem[] = [
 ];
 
 const secondaryNav: NavItem[] = [
-  { href: "/users", label: "用户与 Token", icon: Users, adminOnly: true },
+  { href: "/users", label: "用户与访问令牌", icon: Users, adminOnly: true },
   { href: "/audit", label: "审计日志", icon: ScrollText, manageOnly: true },
   { href: "/uploads", label: "上传会话", icon: UploadCloud, manageOnly: true },
   { href: "/settings", label: "系统设置", icon: Settings2, manageOnly: true },
@@ -31,10 +31,10 @@ const secondaryNav: NavItem[] = [
 export function AppShell({ children }: { children: ReactNode }) {
   const session = useSessionQuery();
   const pathname = usePathname();
-  const queryClient = useQueryClient();
   const { theme, toggleTheme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem("crproxy-sidebar-collapsed") === "true");
+  const [loggingOut, setLoggingOut] = useState(false);
   const menuRef = useRef<HTMLButtonElement>(null);
   const user = session.data?.user;
   const canManage = user?.role === "admin" || user?.role === "operator";
@@ -56,9 +56,16 @@ export function AppShell({ children }: { children: ReactNode }) {
   }, [mobileOpen]);
 
   const logout = async () => {
-    await api.logout().catch(() => undefined);
-    queryClient.clear();
-    navigate("/login", { replace: true });
+    if (loggingOut) return;
+    setLoggingOut(true);
+    try {
+      await api.logout();
+      setCSRFToken("");
+      window.location.replace("/login");
+    } catch (error) {
+      toast.error(`退出登录失败：${errorMessage(error)}`);
+      setLoggingOut(false);
+    }
   };
 
   const visible = (item: NavItem) => (!item.adminOnly || isAdmin) && (!item.manageOnly || canManage);
@@ -74,22 +81,22 @@ export function AppShell({ children }: { children: ReactNode }) {
         <Button ref={menuRef} variant="ghost" size="icon" className="mr-2 lg:hidden" onClick={() => setMobileOpen(true)} aria-label="打开导航"><Menu className="h-5 w-5" /></Button>
         <a href="/" onClick={(event) => { event.preventDefault(); navigate("/"); }} className="flex min-w-0 items-center gap-2.5">
           <span className="grid h-8 w-8 place-items-center rounded-lg bg-primary text-sm font-bold text-primary-foreground">C</span>
-          <span className="min-w-0"><span className="block truncate text-sm font-semibold leading-4">CRProxy</span><span className="block truncate text-[10px] uppercase tracking-[0.14em] text-muted-foreground">OCI Registry</span></span>
+          <span className="min-w-0"><span className="block truncate text-sm font-semibold leading-4">CRProxy</span><span className="block truncate text-[10px] tracking-[0.14em] text-muted-foreground">镜像仓库与缓存</span></span>
         </a>
         <div className="ml-auto flex items-center gap-1.5">
           <Badge variant={session.data ? "success" : "secondary"} className="hidden sm:inline-flex">{session.data ? "已连接" : "未连接"}</Badge>
           <Button variant="ghost" size="icon" onClick={toggleTheme} aria-label="切换主题">{theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}</Button>
           <Button variant="ghost" size="sm" onClick={() => navigate("/account")} className="max-w-40"><KeyRound className="h-4 w-4" /><span className="truncate">{user?.username ?? "账户"}</span><Badge variant="outline" className="hidden sm:inline-flex">{roleLabel(user?.role)}</Badge></Button>
-          <Button variant="ghost" size="icon" onClick={() => void logout()} aria-label="退出登录"><LogOut className="h-4 w-4" /></Button>
+          <Button variant="ghost" size="icon" onClick={() => void logout()} disabled={loggingOut} aria-label="退出登录">{loggingOut ? <Loader2 className="h-4 w-4 animate-spin" /> : <LogOut className="h-4 w-4" />}</Button>
         </div>
       </header>
       <div className="flex min-h-0 w-full min-w-0 flex-1">
         <aside id="app-navigation" aria-label="主导航" className={cn("fixed inset-y-0 left-0 z-50 flex w-60 shrink-0 flex-col border-r bg-card transition-transform lg:static lg:z-30 lg:h-auto lg:translate-x-0", collapsed && "lg:w-[4.25rem]", mobileOpen ? "visible translate-x-0" : "invisible -translate-x-full lg:visible")}>
           <div className="flex h-14 shrink-0 items-center justify-between border-b px-4 lg:hidden"><span className="font-semibold">导航</span><Button variant="ghost" size="icon" onClick={() => setMobileOpen(false)} aria-label="关闭导航"><X className="h-4 w-4" /></Button></div>
           <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto p-3">
-            <p className={cn("px-3 pb-2 pt-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground", collapsed && "lg:text-center")}>{collapsed ? "•" : "Registry"}</p>
+            <p className={cn("px-3 pb-2 pt-1 text-[10px] font-semibold tracking-[0.16em] text-muted-foreground", collapsed && "lg:text-center")}>{collapsed ? "•" : "镜像服务"}</p>
             {renderNav(primaryNav)}
-            <div className="pt-4"><p className={cn("px-3 pb-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground", collapsed && "lg:text-center")}>{collapsed ? "•" : "Operations"}</p>{renderNav(secondaryNav)}</div>
+            <div className="pt-4"><p className={cn("px-3 pb-2 text-[10px] font-semibold tracking-[0.16em] text-muted-foreground", collapsed && "lg:text-center")}>{collapsed ? "•" : "运维管理"}</p>{renderNav(secondaryNav)}</div>
           </nav>
           <div className="hidden shrink-0 border-t p-3 lg:block"><Button variant="ghost" size="sm" className={cn("w-full text-muted-foreground", collapsed ? "px-0" : "justify-start")} onClick={() => setCollapsed((value) => !value)}>{collapsed ? <ChevronsRight className="h-4 w-4" /> : <><ChevronsLeft className="h-4 w-4" />收起侧栏</>}</Button></div>
         </aside>

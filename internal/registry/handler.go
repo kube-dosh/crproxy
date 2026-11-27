@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -30,6 +31,24 @@ type Handler struct {
 	UploadTTL        time.Duration
 	Storage          *storage.Manager
 	Logger           *slog.Logger
+	runtimeLimits    atomic.Pointer[RuntimeLimits]
+}
+
+type RuntimeLimits struct {
+	MaxManifestBytes int64
+	MaxBlobBytes     int64
+	UploadTTL        time.Duration
+}
+
+func (h *Handler) ApplyRuntimeLimits(limits RuntimeLimits) {
+	h.runtimeLimits.Store(&limits)
+}
+
+func (h *Handler) limits() RuntimeLimits {
+	if dynamic := h.runtimeLimits.Load(); dynamic != nil {
+		return *dynamic
+	}
+	return RuntimeLimits{MaxManifestBytes: h.MaxManifestBytes, MaxBlobBytes: h.MaxBlobBytes, UploadTTL: h.UploadTTL}
 }
 
 type parsedRoute struct {

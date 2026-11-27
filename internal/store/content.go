@@ -324,7 +324,7 @@ func (s *Store) ListTags(ctx context.Context, repositoryID int64, last string, l
 		return nil, err
 	}
 	defer rows.Close()
-	var result []string
+	result := make([]string, 0)
 	for rows.Next() {
 		var tag string
 		if err := rows.Scan(&tag); err != nil {
@@ -362,7 +362,7 @@ func (s *Store) RepositoryReferrers(ctx context.Context, repositoryID int64) ([]
 		return nil, err
 	}
 	defer rows.Close()
-	var result []RepositoryReferrer
+	result := make([]RepositoryReferrer, 0)
 	for rows.Next() {
 		var item RepositoryReferrer
 		var annotations string
@@ -398,7 +398,7 @@ func (s *Store) ListReferrers(ctx context.Context, repositoryID int64, subjectDi
 		return nil, err
 	}
 	defer rows.Close()
-	var result []Referrer
+	result := make([]Referrer, 0)
 	for rows.Next() {
 		var ref Referrer
 		var annotations string

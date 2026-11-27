@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"crproxy/internal/runtimeconfig"
 	"crproxy/internal/storage"
 )
 
@@ -56,7 +57,30 @@ func (h *Handler) handleStorageSettingsPut(w http.ResponseWriter, r *http.Reques
 		writeAPIError(w, http.StatusBadRequest, "invalid_request", "invalid JSON request body")
 		return
 	}
-	settings, err := h.storage.UpdateSettings(r.Context(), storage.NormalizeSettings(body))
+	normalized := storage.NormalizeSettings(body)
+	settings := normalized
+	var err error
+	if h.runtime != nil {
+		current := h.runtime.Current()
+		if current == nil {
+			writeAPIError(w, http.StatusServiceUnavailable, "runtime_config_unavailable", "runtime configuration is unavailable")
+			return
+		}
+		next := current.Storage
+		next.MaxBytes = normalized.MaxBytes
+		next.CacheMaxBytes = normalized.CacheMaxBytes
+		next.MinFreeBytes = normalized.MinFreeBytes
+		next.HighWatermark = normalized.HighWatermark
+		next.LowWatermark = normalized.LowWatermark
+		next.OnFull = normalized.OnFull
+		actor := p.Identity.Username
+		if actor == "" {
+			actor = p.Identity.UserID
+		}
+		_, err = h.runtime.UpdateStorage(r.Context(), current.Sections[runtimeconfig.SectionStorage].Version, actor, next)
+	} else {
+		settings, err = h.storage.UpdateSettings(r.Context(), normalized)
+	}
 	if errors.Is(err, storage.ErrInvalidSettings) {
 		writeAPIError(w, http.StatusBadRequest, "invalid_storage_settings", err.Error())
 		return

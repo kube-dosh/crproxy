@@ -1,19 +1,28 @@
 [Unit]
-Description=crproxy OCI registry and pull-through cache
-Documentation=https://github.com/example/crproxy
+Description=crproxy OCI Distribution registry and pull-through cache
+Documentation=https://codeberg.org/aido/crproxy
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=60s
+StartLimitBurst=5
 
 [Service]
 Type=simple
 User=crproxy
 Group=crproxy
-EnvironmentFile=-/etc/crproxy/crproxy.env
+WorkingDirectory=/var/lib/crproxy
+ConfigurationDirectory=crproxy
+ConfigurationDirectoryMode=0750
+StateDirectory=crproxy
+StateDirectoryMode=0750
 ExecStart=/usr/local/bin/crproxy serve -config /etc/crproxy/crproxy.yaml
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=30s
+KillSignal=SIGTERM
 LimitNOFILE=1048576
+UMask=0027
+
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
@@ -21,15 +30,21 @@ ProtectSystem=strict
 ProtectHome=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
+ProtectKernelLogs=true
 ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
 RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
 CapabilityBoundingSet=
 AmbientCapabilities=
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
 ReadWritePaths=/var/lib/crproxy
-UMask=0027
 
 [Install]
 WantedBy=multi-user.target

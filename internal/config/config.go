@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"net"
 	"net/netip"
 	"net/url"
 	"os"
@@ -19,16 +20,26 @@ import (
 )
 
 type Config struct {
-	Server    ServerConfig     `yaml:"server"`
-	Auth      AuthConfig       `yaml:"auth"`
-	Storage   StorageConfig    `yaml:"storage"`
-	Proxy     ProxyConfig      `yaml:"proxy"`
-	Upstreams []UpstreamConfig `yaml:"upstreams_seed"`
+	Server        ServerConfig         `yaml:"server"`
+	Auth          AuthConfig           `yaml:"auth"`
+	Storage       StorageConfig        `yaml:"storage"`
+	Proxy         ProxyConfig          `yaml:"proxy"`
+	OutboundProxy *OutboundProxyConfig `yaml:"outbound_proxy"`
+	Upstreams     []UpstreamConfig     `yaml:"upstreams_seed"`
 }
 
 type ProxyConfig struct {
 	Disabled   bool   `yaml:"disabled"`
 	PathPrefix string `yaml:"path_prefix"`
+}
+
+type OutboundProxyConfig struct {
+	HTTPProxy   string `yaml:"http_proxy"`
+	HTTPSProxy  string `yaml:"https_proxy"`
+	NoProxy     string `yaml:"no_proxy"`
+	Username    string `yaml:"username"`
+	Password    string `yaml:"password"`
+	PasswordEnv string `yaml:"password_env"`
 }
 
 type UpstreamConfig struct {
@@ -54,11 +65,29 @@ type UpstreamConfig struct {
 }
 
 type ServerConfig struct {
-	Listen         string    `yaml:"listen"`
-	PublicHost     string    `yaml:"public_host"`
-	PublicScheme   string    `yaml:"public_scheme"`
-	TLS            TLSConfig `yaml:"tls"`
-	TrustedProxies []string  `yaml:"trusted_proxies"`
+	Listen         string             `yaml:"listen"`
+	PublicHost     string             `yaml:"public_host"`
+	PublicScheme   string             `yaml:"public_scheme"`
+	TLS            TLSConfig          `yaml:"tls"`
+	TrustedProxies []string           `yaml:"trusted_proxies"`
+	Admin          *AdminServerConfig `yaml:"admin"`
+}
+
+// AdminServerConfig describes the optional management plane listener. An empty
+// Listen value means the management console and API share the registry listener.
+type AdminServerConfig struct {
+	Listen       string          `yaml:"listen"`
+	PublicHost   string          `yaml:"public_host"`
+	PublicScheme string          `yaml:"public_scheme"`
+	TLS          *AdminTLSConfig `yaml:"tls"`
+}
+
+type AdminTLSConfig struct {
+	Mode          string `yaml:"mode"`
+	CertFile      string `yaml:"cert_file"`
+	KeyFile       string `yaml:"key_file"`
+	MinVersion    string `yaml:"min_version"`
+	ReloadSeconds int    `yaml:"reload_seconds"`
 }
 
 type TLSConfig struct {
@@ -84,11 +113,12 @@ type WebAuthConfig struct {
 }
 
 type RegistryAuthConfig struct {
-	Challenge      string `yaml:"challenge"`
-	Service        string `yaml:"service"`
-	Realm          string `yaml:"realm"`
-	AllowAnonymous bool   `yaml:"allow_anonymous"`
-	TokenTTL       string `yaml:"token_ttl"`
+	Challenge        string   `yaml:"challenge"`
+	Service          string   `yaml:"service"`
+	Realm            string   `yaml:"realm"`
+	AllowAnonymous   bool     `yaml:"allow_anonymous"`
+	AnonymousActions []string `yaml:"anonymous_actions"`
+	TokenTTL         string   `yaml:"token_ttl"`
 }
 
 type BootstrapAdminConfig struct {
@@ -182,6 +212,9 @@ func Load(path string) (Config, error) {
 	if err := applyEnv(&cfg); err != nil {
 		return Config{}, err
 	}
+	if err := normalizeOutboundProxy(&cfg); err != nil {
+		return Config{}, err
+	}
 	if cfg.Server.PublicHost == "" {
 		if strings.HasPrefix(cfg.Server.Listen, ":") {
 			cfg.Server.PublicHost = "localhost" + cfg.Server.Listen
@@ -219,6 +252,12 @@ func Load(path string) (Config, error) {
 	if cfg.Server.TLS.HSTS && cfg.Server.PublicScheme != "https" {
 		return Config{}, fmt.Errorf("server.tls.hsts requires public_scheme=https")
 	}
+	if err := normalizeAdminServer(&cfg); err != nil {
+		return Config{}, err
+	}
+	if cfg.Server.TLS.HSTS && cfg.AdminSeparate() && cfg.AdminPublicScheme() != "https" {
+		return Config{}, fmt.Errorf("server.tls.hsts requires server.admin.public_scheme=https when the management plane is separate")
+	}
 	for index, raw := range cfg.Server.TrustedProxies {
 		prefix, err := parseTrustedProxy(raw)
 		if err != nil {
@@ -235,6 +274,11 @@ func Load(path string) (Config, error) {
 	if cfg.Auth.Registry.Challenge != "bearer" && cfg.Auth.Registry.Challenge != "basic" {
 		return Config{}, fmt.Errorf("invalid auth.registry.challenge %q", cfg.Auth.Registry.Challenge)
 	}
+	anonymousActions, err := normalizeAnonymousActions(cfg.Auth.Registry.AllowAnonymous, cfg.Auth.Registry.AnonymousActions)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.Auth.Registry.AnonymousActions = anonymousActions
 	if cfg.Auth.Registry.Realm != "" {
 		cfg.Auth.Registry.Realm = strings.TrimRight(strings.TrimSpace(cfg.Auth.Registry.Realm), "/")
 		realm, err := url.Parse(cfg.Auth.Registry.Realm)
@@ -532,6 +576,170 @@ func (c Config) PublicScheme() string {
 	return "http"
 }
 
+func (c Config) RegistryPublicURL() string {
+	return c.PublicScheme() + "://" + c.Server.PublicHost
+}
+
+func (c Config) AdminSeparate() bool {
+	return c.Server.Admin != nil && strings.TrimSpace(c.Server.Admin.Listen) != ""
+}
+
+func (c Config) AdminListen() string {
+	if c.AdminSeparate() {
+		return c.Server.Admin.Listen
+	}
+	return c.Server.Listen
+}
+
+func (c Config) AdminPublicHost() string {
+	if c.AdminSeparate() && c.Server.Admin.PublicHost != "" {
+		return c.Server.Admin.PublicHost
+	}
+	return c.Server.PublicHost
+}
+
+func (c Config) AdminPublicScheme() string {
+	if c.AdminSeparate() && c.Server.Admin.PublicScheme != "" {
+		return c.Server.Admin.PublicScheme
+	}
+	return c.PublicScheme()
+}
+
+func (c Config) AdminPublicURL() string {
+	return c.AdminPublicScheme() + "://" + c.AdminPublicHost()
+}
+
+func (c Config) ListenerMode() string {
+	if c.AdminSeparate() {
+		return "split"
+	}
+	return "shared"
+}
+
+// AdminTLS returns the effective TLS settings for the management plane.
+func (c Config) AdminTLS() TLSConfig {
+	if !c.AdminSeparate() || c.Server.Admin == nil || c.Server.Admin.TLS == nil || c.Server.Admin.TLS.Mode == "inherit" {
+		return c.Server.TLS
+	}
+	tls := c.Server.Admin.TLS
+	if tls.Mode == "none" {
+		return TLSConfig{}
+	}
+	return TLSConfig{
+		Mode:          tls.Mode,
+		CertFile:      tls.CertFile,
+		KeyFile:       tls.KeyFile,
+		MinVersion:    tls.MinVersion,
+		ReloadSeconds: tls.ReloadSeconds,
+	}
+}
+
+func normalizeAdminServer(cfg *Config) error {
+	admin := cfg.Server.Admin
+	if admin == nil {
+		return nil
+	}
+	admin.Listen = strings.TrimSpace(admin.Listen)
+	if admin.Listen == "" || sameListenAddress(admin.Listen, cfg.Server.Listen) {
+		// Explicitly configuring the same listener is idempotent: it means the
+		// management and registry planes share that listener.
+		admin.Listen = ""
+		return nil
+	}
+	if listenAddressesOverlap(admin.Listen, cfg.Server.Listen) {
+		return fmt.Errorf("server.admin.listen %q overlaps server.listen %q; use the same address to share a listener or choose a different port", admin.Listen, cfg.Server.Listen)
+	}
+	if admin.PublicHost == "" {
+		if strings.HasPrefix(admin.Listen, ":") {
+			admin.PublicHost = "localhost" + admin.Listen
+		} else {
+			admin.PublicHost = admin.Listen
+		}
+	}
+	admin.PublicHost = strings.ToLower(strings.TrimSpace(admin.PublicHost))
+	if err := netutil.ValidateHostPort(admin.PublicHost); err != nil {
+		return fmt.Errorf("invalid server.admin.public_host %q: %w", admin.PublicHost, err)
+	}
+	if admin.TLS == nil {
+		admin.TLS = &AdminTLSConfig{Mode: "inherit"}
+	}
+	admin.TLS.Mode = strings.ToLower(strings.TrimSpace(admin.TLS.Mode))
+	if admin.TLS.Mode == "" {
+		admin.TLS.Mode = "inherit"
+	}
+	switch admin.TLS.Mode {
+	case "inherit":
+		if admin.TLS.CertFile != "" || admin.TLS.KeyFile != "" || admin.TLS.MinVersion != "" || admin.TLS.ReloadSeconds != 0 {
+			return fmt.Errorf("server.admin.tls certificate options require mode=file")
+		}
+	case "none":
+		if admin.TLS.CertFile != "" || admin.TLS.KeyFile != "" || admin.TLS.MinVersion != "" || admin.TLS.ReloadSeconds != 0 {
+			return fmt.Errorf("server.admin.tls certificate options require mode=file")
+		}
+	case "file":
+		if admin.TLS.CertFile == "" || admin.TLS.KeyFile == "" {
+			return fmt.Errorf("server.admin.tls cert_file and key_file are required when mode=file")
+		}
+		if admin.TLS.MinVersion == "" {
+			admin.TLS.MinVersion = "1.2"
+		}
+		if admin.TLS.MinVersion != "1.2" && admin.TLS.MinVersion != "1.3" {
+			return fmt.Errorf("invalid server.admin.tls.min_version %q", admin.TLS.MinVersion)
+		}
+		if admin.TLS.ReloadSeconds < 0 {
+			return fmt.Errorf("server.admin.tls.reload_seconds cannot be negative")
+		}
+		if admin.TLS.ReloadSeconds == 0 {
+			admin.TLS.ReloadSeconds = 60
+		}
+	default:
+		return fmt.Errorf("unsupported server.admin.tls.mode %q", admin.TLS.Mode)
+	}
+	admin.PublicScheme = strings.ToLower(strings.TrimSpace(admin.PublicScheme))
+	switch admin.PublicScheme {
+	case "":
+		if admin.TLS.Mode == "file" || (admin.TLS.Mode == "inherit" && cfg.Server.PublicScheme == "https") {
+			admin.PublicScheme = "https"
+		} else {
+			admin.PublicScheme = "http"
+		}
+	case "http", "https":
+	default:
+		return fmt.Errorf("invalid server.admin.public_scheme %q", admin.PublicScheme)
+	}
+	return nil
+}
+
+func sameListenAddress(left, right string) bool {
+	leftHost, leftPort, leftErr := net.SplitHostPort(strings.TrimSpace(left))
+	rightHost, rightPort, rightErr := net.SplitHostPort(strings.TrimSpace(right))
+	if leftErr != nil || rightErr != nil || leftPort != rightPort {
+		return strings.TrimSpace(left) == strings.TrimSpace(right)
+	}
+	return normalizeListenHost(leftHost) == normalizeListenHost(rightHost)
+}
+
+func listenAddressesOverlap(left, right string) bool {
+	leftHost, leftPort, leftErr := net.SplitHostPort(strings.TrimSpace(left))
+	rightHost, rightPort, rightErr := net.SplitHostPort(strings.TrimSpace(right))
+	if leftErr != nil || rightErr != nil || leftPort != rightPort {
+		return false
+	}
+	leftHost = normalizeListenHost(leftHost)
+	rightHost = normalizeListenHost(rightHost)
+	return leftHost == rightHost || leftHost == "*" || rightHost == "*"
+}
+
+func normalizeListenHost(host string) string {
+	host = strings.ToLower(strings.Trim(host, "[]"))
+	switch host {
+	case "", "0.0.0.0", "::":
+		return "*"
+	default:
+		return host
+	}
+}
+
 func parseTrustedProxy(raw string) (string, error) {
 	value := strings.TrimSpace(raw)
 	if value == "" {
@@ -550,11 +758,107 @@ func parseTrustedProxy(raw string) (string, error) {
 	return netip.PrefixFrom(address, address.BitLen()).String(), nil
 }
 
+func normalizeOutboundProxy(cfg *Config) error {
+	if cfg.OutboundProxy == nil {
+		cfg.OutboundProxy = &OutboundProxyConfig{
+			HTTPProxy:  firstEnvironmentValue("HTTP_PROXY", "http_proxy"),
+			HTTPSProxy: firstEnvironmentValue("HTTPS_PROXY", "https_proxy"),
+			NoProxy:    firstEnvironmentValue("NO_PROXY", "no_proxy"),
+		}
+	}
+	proxy := cfg.OutboundProxy
+	proxy.HTTPProxy = strings.TrimSpace(proxy.HTTPProxy)
+	proxy.HTTPSProxy = strings.TrimSpace(proxy.HTTPSProxy)
+	proxy.NoProxy = strings.TrimSpace(proxy.NoProxy)
+	proxy.Username = strings.TrimSpace(proxy.Username)
+	if proxy.Password == "" && proxy.PasswordEnv != "" {
+		proxy.Password = os.Getenv(proxy.PasswordEnv)
+	}
+	if proxy.Username == "" && proxy.Password != "" {
+		return fmt.Errorf("outbound_proxy.username is required when password is configured")
+	}
+	if proxy.Username != "" && proxy.Password == "" {
+		return fmt.Errorf("outbound_proxy.password or password_env is required when username is configured")
+	}
+	if proxy.Username != "" && proxy.HTTPProxy == "" && proxy.HTTPSProxy == "" {
+		return fmt.Errorf("outbound_proxy.username requires http_proxy or https_proxy")
+	}
+	hasSeparateAuth := proxy.Username != ""
+	if err := validateOutboundProxyURL("outbound_proxy.http_proxy", proxy.HTTPProxy, hasSeparateAuth); err != nil {
+		return err
+	}
+	if err := validateOutboundProxyURL("outbound_proxy.https_proxy", proxy.HTTPSProxy, hasSeparateAuth); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateOutboundProxyURL(name, raw string, hasSeparateAuth bool) error {
+	if raw == "" {
+		return nil
+	}
+	proxyURL, err := url.Parse(raw)
+	if err != nil || proxyURL.Host == "" || (proxyURL.Scheme != "http" && proxyURL.Scheme != "https") {
+		return fmt.Errorf("invalid %s: must be an http or https URL with a host", name)
+	}
+	if proxyURL.Path != "" && proxyURL.Path != "/" || proxyURL.RawQuery != "" || proxyURL.Fragment != "" {
+		return fmt.Errorf("invalid %s: path, query and fragment are not allowed", name)
+	}
+	if hasSeparateAuth && proxyURL.User != nil {
+		return fmt.Errorf("invalid %s: userinfo must not be combined with username/password", name)
+	}
+	return nil
+}
+
+func firstEnvironmentValue(keys ...string) string {
+	for _, key := range keys {
+		if value, ok := os.LookupEnv(key); ok {
+			return value
+		}
+	}
+	return ""
+}
+
 func (c Config) Realm() string {
 	if c.Auth.Registry.Realm != "" {
 		return strings.TrimRight(c.Auth.Registry.Realm, "/")
 	}
 	return c.PublicScheme() + "://" + c.Server.PublicHost
+}
+
+func splitAnonymousActions(raw string) []string {
+	var actions []string
+	for _, value := range strings.Split(raw, ",") {
+		if value = strings.TrimSpace(value); value != "" {
+			actions = append(actions, value)
+		}
+	}
+	return actions
+}
+
+func normalizeAnonymousActions(enabled bool, actions []string) ([]string, error) {
+	if !enabled {
+		return nil, nil
+	}
+	allowed := map[string]bool{"pull": true, "push": true, "delete": true, "catalog": true}
+	seen := make(map[string]bool, len(actions))
+	for _, raw := range actions {
+		action := strings.ToLower(strings.TrimSpace(raw))
+		if !allowed[action] {
+			return nil, fmt.Errorf("invalid auth.registry.anonymous_actions value %q", raw)
+		}
+		seen[action] = true
+	}
+	result := make([]string, 0, len(seen))
+	for _, action := range []string{"pull", "push", "delete", "catalog"} {
+		if seen[action] {
+			result = append(result, action)
+		}
+	}
+	if len(result) == 0 {
+		result = []string{"pull"}
+	}
+	return result, nil
 }
 
 func applyEnv(cfg *Config) error {
@@ -566,6 +870,19 @@ func applyEnv(cfg *Config) error {
 	setString("CRPROXY_LISTEN", &cfg.Server.Listen)
 	setString("CRPROXY_PUBLIC_HOST", &cfg.Server.PublicHost)
 	setString("CRPROXY_PUBLIC_SCHEME", &cfg.Server.PublicScheme)
+	_, adminListenSet := os.LookupEnv("CRPROXY_ADMIN_LISTEN")
+	_, adminHostSet := os.LookupEnv("CRPROXY_ADMIN_PUBLIC_HOST")
+	_, adminSchemeSet := os.LookupEnv("CRPROXY_ADMIN_PUBLIC_SCHEME")
+	if adminListenSet || adminHostSet || adminSchemeSet {
+		if cfg.Server.Admin == nil {
+			cfg.Server.Admin = &AdminServerConfig{}
+		}
+	}
+	if cfg.Server.Admin != nil {
+		setString("CRPROXY_ADMIN_LISTEN", &cfg.Server.Admin.Listen)
+		setString("CRPROXY_ADMIN_PUBLIC_HOST", &cfg.Server.Admin.PublicHost)
+		setString("CRPROXY_ADMIN_PUBLIC_SCHEME", &cfg.Server.Admin.PublicScheme)
+	}
 	setString("CRPROXY_STORAGE_ROOT", &cfg.Storage.Root)
 	setString("CRPROXY_ADMIN_USERNAME", &cfg.Auth.BootstrapAdmin.Username)
 	setString("CRPROXY_ADMIN_PASSWORD", &cfg.Auth.BootstrapAdmin.Password)
@@ -580,6 +897,9 @@ func applyEnv(cfg *Config) error {
 			return fmt.Errorf("invalid CRPROXY_ALLOW_ANONYMOUS %q", value)
 		}
 		cfg.Auth.Registry.AllowAnonymous = parsed
+	}
+	if value, ok := os.LookupEnv("CRPROXY_ANONYMOUS_ACTIONS"); ok {
+		cfg.Auth.Registry.AnonymousActions = splitAnonymousActions(value)
 	}
 	if value, ok := os.LookupEnv("CRPROXY_MAX_BLOB_BYTES"); ok {
 		parsed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)

@@ -30,7 +30,7 @@ func (h *TokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	service := r.URL.Query().Get("service")
-	if service != "" && service != h.Auth.Service {
+	if service != "" && service != h.Auth.ServiceName() {
 		writeRegistryError(w, http.StatusBadRequest, "UNAUTHORIZED", "invalid token service", nil)
 		return
 	}

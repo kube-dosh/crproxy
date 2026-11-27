@@ -24,8 +24,9 @@ export function useUnauthorizedRedirect() {
   useEffect(() => {
     const handler = () => {
       setCSRFToken("");
+      if (window.location.pathname === "/login") return;
       queryClient.clear();
-      if (window.location.pathname !== "/login") navigate("/login", { replace: true });
+      navigate("/login", { replace: true });
     };
     window.addEventListener(unauthorizedEvent, handler);
     return () => window.removeEventListener(unauthorizedEvent, handler);

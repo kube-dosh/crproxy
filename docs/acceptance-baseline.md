@@ -41,6 +41,7 @@
 | 场景 | 期望 |
 | --- | --- |
 | 未认证且禁止匿名 | `401` + challenge |
+| 未认证且允许匿名 push | 按 `anonymous_actions` 放行上传 |
 | 已认证但缺 push/delete scope | `403 DENIED` |
 | blob 不存在 | `404 BLOB_UNKNOWN` |
 | manifest 不存在 | `404 MANIFEST_UNKNOWN` |
@@ -96,7 +97,9 @@ podman pull registry.example.com/demo/nginx@sha256:<digest>
 - 角色矩阵：admin、operator、viewer 的页面、API 和 Registry 动作符合设计。
 - PAT 有效权限 = 用户角色权限 ∩ PAT scopes。
 - Docker JWT 只接受 HS256；拒绝 `none` 和其他算法。
-- `/v2/_catalog` 仅 Basic/PAT/Session 的 manage/admin 可用。
+- `/v2/_catalog` 仅 Basic/PAT 的 manage/admin 可用；管理台 Session 不能访问 Distribution。
+- `/api/v1/*` 仅接受 HttpOnly Session Cookie；Basic 和 Bearer PAT 即使有效也返回 401，且不返回 `WWW-Authenticate`。
+- `/v2/*` 与 `/v2/token` 不接受管理台 Session Cookie，仍使用各自的 Basic/Bearer/PAT/anonymous 流程。
 - 代理 token 即使包含 push/delete，代理写请求仍返回 405。
 - 登录限流、CSRF、Origin 校验、Session 轮换和密码修改后 session 失效。
 - 上游匿名、Basic、静态 Bearer、challenge token 四种方式都有测试。
@@ -174,9 +177,10 @@ podman pull registry.example.com/demo/nginx@sha256:<digest>
 
 - 最终交付二进制 `bin/crproxy` 的 OCI Distribution Spec 1.1：`850 passed / 4 optional skips / 0 failed / 0 error`，详见 `docs/conformance-report.md`。
 - Podman 5.8.9：登录、Quay 首拉与缓存命中、GHCR 拉取、本地 push、按 digest pull、PAT pull、代理 push `405`、原生 HTTPS + Basic 拉取与证书热加载、只读容器实例拉取与缓存命中，详见 `docs/podman-smoke.md`。
-- 出站代理：服务端设置 `HTTP_PROXY/HTTPS_PROXY=http://127.0.0.1:1080` 后，Podman 真实拉取 Docker Hub `busybox:latest` 与 registry.k8s.io `pause:3.10` 成功，缓存命中分别约 `0.53s`、`0.56s`。
+- 出站代理：`crproxy.yaml` 的 `outbound_proxy` 配置 `127.0.0.1:1080` 后，Podman 真实拉取 Docker Hub 与 registry.k8s.io 成功；未配置该块时仍回退到 `HTTP_PROXY/HTTPS_PROXY/NO_PROXY`。
+- 运行时配置：认证、会话、存储、上传 TTL、审计保留期、代理入口、HSTS、出站代理均可在管理台分区编辑；乐观锁冲突返回 `409`，密码不回显，保存后热生效，并可恢复 YAML/环境变量基线。
 - `go test ./...`、`go test -race ./...`、`go vet ./...` 通过。
 - `npm test`、`npm run typecheck`、`npm run build` 通过。
 - 备份恢复、主密钥轮换、TLS 热加载、可信反代、存储配额、缓存淘汰与本地内容保护均有专项测试。
 - 容器交付物以 UID `65532`、只读根文件系统、`cap-drop=ALL`、`no-new-privileges` 运行，健康检查、管理台、登录、代理拉取和缓存命中均通过。
-- 当前环境直连 Docker Hub 会被重置、registry.k8s.io manifest 重定向目标会超时；通过标准 HTTP CONNECT 代理已完成两者真实 Podman 回源。部署环境的代理地址按 `docs/deployment.md` 配置，不需要修改上游代码。
+- 当前环境直连 Docker Hub 会被重置、registry.k8s.io manifest 重定向目标会超时；通过 YAML 出站代理已完成真实 Podman 回源。部署环境的代理地址按 `docs/deployment.md` 的 `outbound_proxy` 配置，不需要修改上游代码。

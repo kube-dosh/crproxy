@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -32,6 +33,7 @@ type UpstreamConfig struct {
 	TagTTL             time.Duration
 	RequestTimeout     time.Duration
 	MaxBlobBytes       int64
+	OutboundProxy      *OutboundProxy
 }
 
 type Upstream struct {
@@ -48,6 +50,8 @@ type Upstream struct {
 	RequestTimeout   time.Duration
 	MaxBlobBytes     int64
 	client           *http.Client
+	transport        *http.Transport
+	outboundProxy    atomic.Pointer[OutboundProxy]
 	tokenMu          sync.Mutex
 	tokens           map[string]upstreamToken
 	tokenFlights     flightGroup
@@ -93,7 +97,6 @@ func NewUpstream(cfg UpstreamConfig) (*Upstream, error) {
 		tlsConfig.RootCAs = roots
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.Proxy = http.ProxyFromEnvironment
 	transport.TLSClientConfig = tlsConfig
 	transport.TLSHandshakeTimeout = 10 * time.Second
 	transport.ResponseHeaderTimeout = cfg.RequestTimeout
@@ -118,7 +121,7 @@ func NewUpstream(cfg UpstreamConfig) (*Upstream, error) {
 			return nil
 		},
 	}
-	return &Upstream{
+	upstream := &Upstream{
 		ID:               cfg.ID,
 		Endpoint:         endpoint,
 		RouteHost:        strings.ToLower(strings.TrimSpace(cfg.RouteHost)),
@@ -132,8 +135,39 @@ func NewUpstream(cfg UpstreamConfig) (*Upstream, error) {
 		RequestTimeout:   cfg.RequestTimeout,
 		MaxBlobBytes:     cfg.MaxBlobBytes,
 		client:           client,
+		transport:        transport,
 		tokens:           map[string]upstreamToken{},
-	}, nil
+	}
+	if err := upstream.SetOutboundProxy(cfg.OutboundProxy); err != nil {
+		return nil, err
+	}
+	transport.Proxy = func(req *http.Request) (*url.URL, error) {
+		proxyFunc, err := upstream.outboundProxy.Load().ProxyFunc()
+		if err != nil {
+			return nil, err
+		}
+		return proxyFunc(req)
+	}
+	return upstream, nil
+}
+
+// SetOutboundProxy atomically changes the proxy used by subsequent upstream
+// requests. Existing idle connections are closed so a new proxy takes effect
+// immediately without rebuilding every upstream.
+func (u *Upstream) SetOutboundProxy(value *OutboundProxy) error {
+	var next *OutboundProxy
+	if value != nil {
+		copy := *value
+		next = &copy
+	}
+	if _, err := next.ProxyFunc(); err != nil {
+		return err
+	}
+	u.outboundProxy.Store(next)
+	if u.transport != nil {
+		u.transport.CloseIdleConnections()
+	}
+	return nil
 }
 
 func dialUpstream(ctx context.Context, network, address string) (net.Conn, error) {
@@ -185,7 +219,7 @@ func (u *Upstream) Do(ctx context.Context, method, path, repository string, head
 				req.Header.Add(key, value)
 			}
 		}
-		u.applyAuth(req, repository)
+		rejectedToken := u.applyAuth(req, repository)
 		resp, err := u.client.Do(req)
 		if err != nil {
 			return nil, err
@@ -199,7 +233,7 @@ func (u *Upstream) Do(ctx context.Context, method, path, repository string, head
 		}
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		_ = resp.Body.Close()
-		_, err = u.refreshToken(ctx, challenge, repository)
+		_, err = u.refreshToken(ctx, challenge, repository, rejectedToken)
 		if err != nil {
 			return nil, err
 		}
@@ -207,9 +241,16 @@ func (u *Upstream) Do(ctx context.Context, method, path, repository string, head
 	return nil, errors.New("upstream authentication retry exhausted")
 }
 
-func (u *Upstream) refreshToken(ctx context.Context, challenge bearerChallenge, repository string) (string, error) {
+func (u *Upstream) refreshToken(ctx context.Context, challenge bearerChallenge, repository, rejectedToken string) (string, error) {
+	if cached, ok := u.cachedToken(repository); ok && cached != rejectedToken {
+		return cached, nil
+	}
 	var token string
 	err := u.tokenFlights.Do(repository, func() error {
+		if cached, ok := u.cachedToken(repository); ok && cached != rejectedToken {
+			token = cached
+			return nil
+		}
 		u.clearToken(repository)
 		value, ttl, err := u.fetchToken(ctx, challenge, repository)
 		if err != nil {
@@ -231,10 +272,10 @@ func (u *Upstream) refreshToken(ctx context.Context, challenge bearerChallenge, 
 	return "", errors.New("upstream token refresh produced no token")
 }
 
-func (u *Upstream) applyAuth(req *http.Request, repository string) {
+func (u *Upstream) applyAuth(req *http.Request, repository string) string {
 	if token, ok := u.cachedToken(repository); ok {
 		req.Header.Set("Authorization", "Bearer "+token)
-		return
+		return token
 	}
 	switch u.AuthType {
 	case "basic":
@@ -246,6 +287,7 @@ func (u *Upstream) applyAuth(req *http.Request, repository string) {
 			req.Header.Set("Authorization", "Bearer "+u.BearerToken)
 		}
 	}
+	return ""
 }
 
 func (u *Upstream) cachedToken(repository string) (string, bool) {

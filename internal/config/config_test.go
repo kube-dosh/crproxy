@@ -12,6 +12,9 @@ var configEnvironmentKeys = []string{
 	"CRPROXY_LISTEN",
 	"CRPROXY_PUBLIC_HOST",
 	"CRPROXY_PUBLIC_SCHEME",
+	"CRPROXY_ADMIN_LISTEN",
+	"CRPROXY_ADMIN_PUBLIC_HOST",
+	"CRPROXY_ADMIN_PUBLIC_SCHEME",
 	"CRPROXY_STORAGE_ROOT",
 	"CRPROXY_ADMIN_USERNAME",
 	"CRPROXY_ADMIN_PASSWORD",
@@ -23,6 +26,12 @@ var configEnvironmentKeys = []string{
 	"CRPROXY_ALLOW_ANONYMOUS",
 	"CRPROXY_MAX_BLOB_BYTES",
 	"CRPROXY_MAX_MANIFEST_BYTES",
+	"HTTP_PROXY",
+	"HTTPS_PROXY",
+	"NO_PROXY",
+	"http_proxy",
+	"https_proxy",
+	"no_proxy",
 }
 
 func TestLoadDefaults(t *testing.T) {
@@ -49,6 +58,104 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Realm() != "http://localhost:5000" {
 		t.Fatalf("unexpected realm %q", cfg.Realm())
 	}
+	if cfg.AdminSeparate() || cfg.AdminListen() != ":5000" || cfg.AdminPublicURL() != "http://localhost:5000" {
+		t.Fatalf("management plane must share the registry listener by default: admin=%+v", cfg.Server.Admin)
+	}
+}
+
+func TestLoadAdminListener(t *testing.T) {
+	isolateConfigEnvironment(t)
+	t.Run("explicit same listener is shared", func(t *testing.T) {
+		cfg, err := Load(writeConfig(t, "server:\n  admin:\n    listen: ':5000'\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.AdminSeparate() || cfg.AdminListen() != ":5000" || cfg.AdminPublicURL() != "http://localhost:5000" || cfg.ListenerMode() != "shared" {
+			t.Fatalf("same listener must normalize to shared mode: %+v", cfg.Server)
+		}
+	})
+	t.Run("equivalent wildcard listener is shared", func(t *testing.T) {
+		cfg, err := Load(writeConfig(t, "server:\n  listen: ':5000'\n  admin:\n    listen: '0.0.0.0:5000'\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.AdminSeparate() || cfg.ListenerMode() != "shared" {
+			t.Fatalf("equivalent wildcard listeners must normalize to shared mode: %+v", cfg.Server)
+		}
+	})
+	t.Run("split listener inherits TLS and scheme", func(t *testing.T) {
+		cfg, err := Load(writeConfig(t, `server:
+  public_host: registry.example.com:5000
+  public_scheme: https
+  tls:
+    mode: file
+    cert_file: cert.pem
+    key_file: key.pem
+  admin:
+    listen: ':5443'
+    public_host: registry.example.com:5443
+`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !cfg.AdminSeparate() || cfg.AdminListen() != ":5443" || cfg.AdminPublicScheme() != "https" || cfg.AdminPublicURL() != "https://registry.example.com:5443" || cfg.ListenerMode() != "split" {
+			t.Fatalf("unexpected split management plane: %+v", cfg.Server.Admin)
+		}
+		if cfg.AdminTLS().Mode != "file" || cfg.AdminTLS().CertFile != "cert.pem" {
+			t.Fatalf("management TLS must inherit registry TLS: %+v", cfg.AdminTLS())
+		}
+		if cfg.RegistryPublicURL() != "https://registry.example.com:5000" {
+			t.Fatalf("unexpected registry URL %q", cfg.RegistryPublicURL())
+		}
+	})
+	t.Run("split listener can disable direct TLS", func(t *testing.T) {
+		cfg, err := Load(writeConfig(t, `server:
+  public_scheme: https
+  admin:
+    listen: ':5443'
+    public_host: admin.example.com:5443
+    public_scheme: https
+    tls:
+      mode: none
+`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.AdminTLS().Mode != "" || cfg.AdminPublicScheme() != "https" {
+			t.Fatalf("unexpected reverse-proxy management TLS: %+v", cfg.AdminTLS())
+		}
+	})
+	for _, test := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{"invalid tls mode", "server:\n  admin:\n    listen: ':5443'\n    tls:\n      mode: optional\n", "server.admin.tls.mode"},
+		{"missing tls files", "server:\n  admin:\n    listen: ':5443'\n    tls:\n      mode: file\n", "cert_file"},
+		{"invalid public scheme", "server:\n  admin:\n    listen: ':5443'\n    public_host: admin.example.com:5443\n    public_scheme: ftp\n", "server.admin.public_scheme"},
+		{"hsts with http management", "server:\n  public_scheme: https\n  tls:\n    hsts: true\n  admin:\n    listen: ':5443'\n    public_host: admin.example.com:5443\n    public_scheme: http\n", "server.admin.public_scheme=https"},
+		{"overlapping listener", "server:\n  listen: ':5000'\n  admin:\n    listen: '127.0.0.1:5000'\n", "overlaps"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := Load(writeConfig(t, test.body)); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("expected error containing %q, got %v", test.want, err)
+			}
+		})
+	}
+}
+
+func TestLoadAdminEnvironmentOverrides(t *testing.T) {
+	isolateConfigEnvironment(t)
+	t.Setenv("CRPROXY_ADMIN_LISTEN", ":5443")
+	t.Setenv("CRPROXY_ADMIN_PUBLIC_HOST", "admin.example.com:5443")
+	t.Setenv("CRPROXY_ADMIN_PUBLIC_SCHEME", "https")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.AdminSeparate() || cfg.AdminListen() != ":5443" || cfg.AdminPublicURL() != "https://admin.example.com:5443" {
+		t.Fatalf("admin environment overrides were not applied: %+v", cfg.Server.Admin)
+	}
 }
 
 func TestLoadEnvironmentOverridesAndRejectsInvalidValues(t *testing.T) {
@@ -60,6 +167,7 @@ func TestLoadEnvironmentOverridesAndRejectsInvalidValues(t *testing.T) {
 	t.Setenv("CRPROXY_ADMIN_USERNAME", "root")
 	t.Setenv("CRPROXY_ADMIN_PASSWORD", "bootstrap-password-123")
 	t.Setenv("CRPROXY_ALLOW_ANONYMOUS", "TRUE")
+	t.Setenv("CRPROXY_ANONYMOUS_ACTIONS", "push, pull, push")
 	t.Setenv("CRPROXY_MAX_BLOB_BYTES", "1048576")
 	t.Setenv("CRPROXY_MAX_MANIFEST_BYTES", "65536")
 	cfg, err := Load("")
@@ -71,6 +179,9 @@ func TestLoadEnvironmentOverridesAndRejectsInvalidValues(t *testing.T) {
 	}
 	if !cfg.Auth.Registry.AllowAnonymous || cfg.Auth.BootstrapAdmin.Username != "root" || cfg.Auth.BootstrapAdmin.Password != "bootstrap-password-123" {
 		t.Fatalf("authentication overrides were not applied: %+v", cfg.Auth)
+	}
+	if strings.Join(cfg.Auth.Registry.AnonymousActions, ",") != "pull,push" {
+		t.Fatalf("anonymous actions were not normalized: %+v", cfg.Auth.Registry.AnonymousActions)
 	}
 	if cfg.Storage.MaxBlobBytes != 1048576 || cfg.Storage.MaxManifestBytes != 65536 {
 		t.Fatalf("limit overrides were not applied: %+v", cfg.Storage)
@@ -84,6 +195,73 @@ func TestLoadEnvironmentOverridesAndRejectsInvalidValues(t *testing.T) {
 	t.Setenv("CRPROXY_MAX_BLOB_BYTES", "not-a-number")
 	if _, err := Load(""); err == nil || !strings.Contains(err.Error(), "CRPROXY_MAX_BLOB_BYTES") {
 		t.Fatalf("invalid byte limit environment value must fail, got %v", err)
+	}
+}
+
+func TestLoadOutboundProxy(t *testing.T) {
+	isolateConfigEnvironment(t)
+	t.Setenv("HTTP_PROXY", "http://env-http.example.com:3128")
+	t.Setenv("HTTPS_PROXY", "http://env-https.example.com:3128")
+	t.Setenv("NO_PROXY", "localhost,.env.example.com")
+	t.Setenv("TEST_OUTBOUND_PROXY_PASSWORD", "proxy-secret")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OutboundProxy == nil || cfg.OutboundProxy.HTTPProxy != "http://env-http.example.com:3128" || cfg.OutboundProxy.HTTPSProxy != "http://env-https.example.com:3128" || cfg.OutboundProxy.NoProxy != "localhost,.env.example.com" {
+		t.Fatalf("environment outbound proxy fallback was not applied: %+v", cfg.OutboundProxy)
+	}
+
+	cfg, err = Load(writeConfig(t, `outbound_proxy:
+  http_proxy: http://yaml-http.example.com:3128
+  https_proxy: http://yaml-https.example.com:3128
+  no_proxy: 127.0.0.1,.yaml.example.com
+  username: proxy-user
+  password_env: TEST_OUTBOUND_PROXY_PASSWORD
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OutboundProxy.HTTPProxy != "http://yaml-http.example.com:3128" || cfg.OutboundProxy.HTTPSProxy != "http://yaml-https.example.com:3128" || cfg.OutboundProxy.NoProxy != "127.0.0.1,.yaml.example.com" {
+		t.Fatalf("YAML outbound proxy did not override the environment: %+v", cfg.OutboundProxy)
+	}
+	if cfg.OutboundProxy.Username != "proxy-user" || cfg.OutboundProxy.Password != "proxy-secret" {
+		t.Fatalf("outbound proxy credentials were not resolved: %+v", cfg.OutboundProxy)
+	}
+
+	cfg, err = Load(writeConfig(t, "outbound_proxy:\n  http_proxy: ''\n  https_proxy: ''\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OutboundProxy.HTTPProxy != "" || cfg.OutboundProxy.HTTPSProxy != "" {
+		t.Fatalf("explicit empty YAML proxy must disable environment fallback: %+v", cfg.OutboundProxy)
+	}
+}
+
+func TestLoadOutboundProxyValidation(t *testing.T) {
+	isolateConfigEnvironment(t)
+	tests := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{"bad scheme", "outbound_proxy:\n  http_proxy: ftp://proxy.example.com:3128\n", "outbound_proxy.http_proxy"},
+		{"missing host", "outbound_proxy:\n  https_proxy: http:///proxy\n", "outbound_proxy.https_proxy"},
+		{"path", "outbound_proxy:\n  http_proxy: http://proxy.example.com:3128/path\n", "path"},
+		{"query", "outbound_proxy:\n  http_proxy: http://proxy.example.com:3128?x=1\n", "query"},
+		{"userinfo and separate auth", "outbound_proxy:\n  http_proxy: http://user:pass@proxy.example.com:3128\n  username: user\n  password: pass\n", "userinfo"},
+		{"username without password", "outbound_proxy:\n  http_proxy: http://proxy.example.com:3128\n  username: user\n", "password"},
+		{"password without username", "outbound_proxy:\n  http_proxy: http://proxy.example.com:3128\n  password: pass\n", "username"},
+		{"credentials without proxy", "outbound_proxy:\n  username: user\n  password: pass\n", "http_proxy or https_proxy"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := Load(writeConfig(t, test.yaml))
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("expected error containing %q, got %v", test.want, err)
+			}
+		})
 	}
 }
 

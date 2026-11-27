@@ -1,0 +1,10 @@
+crproxy
+Copyright 2026 The crproxy Authors
+
+This product includes software developed by third parties. Those components
+remain subject to their respective licenses and notices. See the dependency
+manifests (go.mod, go.sum, web/package.json, web/package-lock.json) and the
+license files distributed with the corresponding modules and packages.
+
+The Apache License 2.0 does not grant trademark rights beyond customary and
+reasonable use in describing the origin of the work.

@@ -1,120 +1,187 @@
 # crproxy
 
-轻量级、自托管的 OCI Registry：本地支持完整 OCI Distribution Spec 1.1，另提供多上游只读 pull-through cache 和内置 React 管理台。一个 Go 二进制、一个本地数据目录、SQLite rollback journal，不依赖外部数据库、OIDC 或 LDAP。
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-## 能力基线
+**English** | [简体中文](README.zh-CN.md)
 
-- 完整本地 Registry：ping、manifest/index/artifact、blob、普通/分块/流式上传、mount、catalog、tags、referrers、delete、Range 与条件请求。
-- 只读多上游代理：Docker Hub、registry.k8s.io、Quay、GHCR 及任意 OCI Distribution 上游；支持路径路由和 Host 路由。
-- 出站代理：上游请求遵循标准 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY`，HTTPS 上游通过 CONNECT 隧道访问。
-- 代理始终只读：所有写方法固定返回 `405`，不会向上游转发写请求；代理仓库不会进入本地 catalog。
-- 上游鉴权：anonymous、Basic、静态 Bearer、Bearer challenge；HTTPS、自定义 CA、TLS 校验开关。
-- 缓存：manifest/tag TTL、ETag/304 回源、blob/token singleflight、Range 透传、同 digest 跨仓库/上游共享 CAS。
-- 用户鉴权：Basic、Bearer PAT、Docker Registry token flow（HS256 JWT）、Web Session + CSRF。
-- 安全：原生 TLS、证书原子热加载、可信反代、公开 scheme/Host、Secure Cookie、HSTS、安全响应头。
-- 运维：配额与缓存水位、LRU、GC/fsck、上传恢复、审计、Prometheus 指标、健康/就绪探测、备份恢复、主密钥轮换。
-- 交付：React 19 + shadcn 风格管理台内嵌进单二进制；Makefile、多阶段 Dockerfile、Compose、systemd、OpenAPI 与部署文档。
+crproxy is a lightweight, self-hosted OCI registry with multi-upstream pull-through caching. It ships as a single Go binary, uses a local data directory backed by SQLite, and does not require an external database, OIDC, or LDAP.
 
-当前验证结果：
+> **Project status:** pre-1.0. The OCI Distribution core is conformance-tested, but crproxy is intentionally a single-node product with documented security and scale boundaries. Review [Security and production notes](#security-and-production-notes) and [Limitations](#limitations) before production use.
+>
+> **License status:** Apache License 2.0. Commercial use, modification, and distribution are permitted under the license. No warranty, commercial support, or SLA is included unless separately agreed.
 
-- 最终二进制 OCI Distribution Spec 1.1 conformance：`850 passed / 4 optional skips / 0 failed / 0 error`。
-- Podman 5.8.9 实测：登录、Quay/GHCR 代理拉取、缓存命中、本地 push、按 digest pull、PAT pull、代理 push `405`、HTTPS + Basic 拉取与证书热加载。
-- 出站代理实测：服务端配置 `HTTPS_PROXY=http://127.0.0.1:1080` 后，Podman 成功拉取 Docker Hub `busybox:latest` 与 registry.k8s.io `pause:3.10`，缓存命中分别约 `0.53s`、`0.56s`。
-- 只读容器实测：UID `65532`、`cap-drop=ALL`、`no-new-privileges`，健康检查、内嵌管理台、登录、代理拉取和缓存命中通过。
-- 自动化：`go test ./...`、`go test -race ./...`、`go vet ./...`、前端 unit test/typecheck/build。
+## Overview
 
-## 快速启动
+| Area | What crproxy provides |
+| --- | --- |
+| Local registry | OCI Distribution Spec 1.1: manifests, indexes, artifacts, blobs, chunked and streamed uploads, cross-repository mount, catalog, tags, referrers, delete, Range, and conditional requests. |
+| Proxy cache | Read-only pull-through cache for Docker Hub, registry.k8s.io, Quay, GHCR, and other OCI Distribution upstreams. Upstreams can be routed by path or Host. |
+| Cache behavior | Manifest/tag TTL, ETag/304 revalidation, blob and token request coalescing, Range passthrough, and a shared content-addressed store across repositories and upstreams. |
+| Authentication | Registry Basic auth, Bearer PAT, Docker Registry token flow (HS256 JWT), and optional anonymous actions. The management API uses HttpOnly cookie sessions with CSRF protection. |
+| Administration | Embedded React 19 management console for repositories, cache, upstreams, users, storage, audit, metrics, and runtime settings. |
+| Transport | Native TLS with atomic certificate reload, reverse-proxy awareness, HSTS, secure headers, and HTTP/HTTPS outbound proxy support. |
+| Operations | Logical quotas, cache watermarks, LRU eviction, GC/fsck, upload recovery, audit events, Prometheus metrics, health/readiness probes, offline backup/restore, and master-key rotation. |
+
+crproxy is **not** a drop-in Harbor replacement. It does not provide multi-tenant projects, repository-level ACLs, HA, object storage, replication, image scanning, signature policy, or external identity providers. See [Limitations](#limitations).
+
+## Verified baseline
+
+- OCI Distribution Spec 1.1 conformance: `850 passed / 4 optional skips / 0 failed / 0 error`.
+- Go unit and integration tests, race detector, and `go vet` pass.
+- The image-client acceptance suite uses Podman. Other clients may work, but are outside the current acceptance baseline.
+- The reference deployment has been exercised with local push/pull, PAT pull, multi-upstream proxy pulls, cache hits, TLS certificate reload, outbound HTTP proxy, and a read-only container runtime.
+
+See [docs/conformance-report.md](docs/conformance-report.md), [docs/acceptance-baseline.md](docs/acceptance-baseline.md), and [docs/podman-smoke.md](docs/podman-smoke.md).
+
+## Quick start
+
+### Prerequisites
+
+- Go 1.24 or newer.
+- Node.js 24 and npm for the embedded management console.
+- Podman for the documented client smoke tests.
+- Linux for the provided systemd unit, or a container runtime for the container images.
+
+### Build and run
 
 ```bash
-export CRPROXY_ADMIN_PASSWORD='replace-with-a-long-password'
-go run ./cmd/crproxy -config crproxy.example.yaml
+git clone https://codeberg.org/aido/crproxy.git
+cd crproxy
+
+cp crproxy.example.yaml crproxy.yaml
+# Edit crproxy.yaml before starting:
+#   auth.bootstrap_admin.password: at least 12 characters
+#   storage.root: a directory owned by the service user
+
+make build
+./bin/crproxy serve -config crproxy.yaml
 ```
 
-默认监听 `:5000`，数据目录 `./data`。首次启动创建 `admin`，密码不足 12 个字符会拒绝启动。`data/meta/jwt.secret` 和 `data/meta/master.key` 是长期密钥，必须与数据库一起备份。
+The default listeners are `:5000` for the shared registry/management plane. Open `http://127.0.0.1:5000/` for the console. The bootstrap administrator is required to change the initial password before using the management API.
 
-前端源码已内嵌构建。完整构建：
+The default data directory is `./data`. The database is stored under `data/meta/crproxy.db`; the content-addressed store is under `data/cas`. `data/meta/jwt.secret` and `data/meta/master.key` are long-lived secrets and must be backed up with the database.
 
-```bash
-make build        # 前端 npm ci/build + Go 单二进制 -> bin/crproxy
-make verify       # test + race + vet + typecheck + web build
-make container-offline  # Podman 构建 scratch 运行时镜像，适合离线/受控网络
-```
-
-## 使用 Podman
-
-本项目的镜像客户端验收只使用 Podman。
+### Podman smoke test
 
 ```bash
+# Local development only: the default configuration uses HTTP.
 podman login --tls-verify=false -u admin 127.0.0.1:5000
 
-# 本地镜像
-podman pull 127.0.0.1:5000/local/team/app:latest
-podman push 127.0.0.1:5000/local/team/app:latest
-
-# 代理拉取
-podman pull 127.0.0.1:5000/r/quay/prometheus/busybox:latest
+# Proxy pull examples.
+podman pull 127.0.0.1:5000/r/dockerhub/busybox:latest
 podman pull 127.0.0.1:5000/r/ghcr/actions/actions-runner:latest
+podman pull 127.0.0.1:5000/r/quay/prometheus/busybox:latest
+
+# Local push and pull.
+podman tag 127.0.0.1:5000/r/dockerhub/busybox:latest 127.0.0.1:5000/local/team/busybox:latest
+podman push 127.0.0.1:5000/local/team/busybox:latest
+podman pull 127.0.0.1:5000/local/team/busybox:latest
 ```
 
-生产环境应配置 TLS 或由可信反向代理终止 TLS，不要使用 `--tls-verify=false`。代理路由中的写请求会被明确拒绝，见 `docs/podman-smoke.md`。
+Do not use `--tls-verify=false` in production. Put crproxy behind a trusted TLS terminator or configure `server.tls.mode: file`.
 
-### 出站代理
+## Configuration
 
-crproxy 进程遵循标准代理环境变量。需要在受限网络中回源时，在启动前设置：
+`crproxy.example.yaml` is the canonical configuration reference. YAML and environment variables form the startup baseline. Selected settings can be changed at runtime from the management console and are persisted in SQLite until reset.
 
-```bash
-export HTTP_PROXY=http://127.0.0.1:1080
-export HTTPS_PROXY=http://127.0.0.1:1080
-export NO_PROXY=127.0.0.1,localhost
-./bin/crproxy -config /etc/crproxy/crproxy.yaml
+Key settings:
+
+- `server.public_host` and `server.public_scheme`: the externally visible registry origin. They are used for Bearer realms, secure cookies, and generated URLs. They must match the client-facing address.
+- `server.trusted_proxies`: CIDR/IP ranges whose `Forwarded` and `X-Forwarded-*` headers are trusted. Leave empty unless crproxy is behind a controlled reverse proxy.
+- `server.tls.mode=file`: enables native TLS. Certificates are reloaded atomically; a failed reload keeps the previous certificate active.
+- `storage.root`: `meta/`, `cas/`, `uploads/`, `tmp/`, and `trash/` must reside on the same filesystem.
+- `storage.max_bytes` and `storage.cache_max_bytes`: total logical quota and proxy-cache quota. Local content is never evicted by cache LRU.
+- `auth.registry.allow_anonymous` and `auth.registry.anonymous_actions`: anonymous access is disabled by default; grant only the actions that are explicitly required.
+- `proxy.path_prefix`: the path prefix used for proxy routing. The default is `r`.
+
+Settings such as listen addresses, public URL, trusted proxies, TLS mode, storage root, bootstrap administrator, and key file locations require a restart. Runtime sections exposed in the console support hot updates.
+
+### Outbound HTTP/HTTPS proxy
+
+```yaml
+outbound_proxy:
+  http_proxy: http://proxy.example.com:3128
+  https_proxy: http://proxy.example.com:3128
+  no_proxy: localhost,127.0.0.1,::1,.internal.example.com
+  username: ""
+  password: ""
 ```
 
-HTTPS 上游通过 HTTP CONNECT 访问代理；`NO_PROXY` 只应包含确实需要直连的地址。Compose 已透传这三个变量，systemd 可通过 `EnvironmentFile=/etc/crproxy/crproxy.env` 配置。
+HTTPS upstreams are reached through an HTTP `CONNECT` tunnel. If crproxy runs in a VM or container and the proxy runs on the host, do not use `127.0.0.1`; use an address reachable from the crproxy process. Standard `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` environment variables remain supported for container deployments.
 
-## 配置重点
+For the complete configuration and deployment matrix, see [docs/deployment.md](docs/deployment.md).
 
-- `server.public_host` / `server.public_scheme`：生成 Bearer realm、Secure Cookie、绝对 URL 的依据；反代部署必须设置成客户端实际访问的地址。
-- `server.trusted_proxies`：仅这些 CIDR/IP 的 `Forwarded`、`X-Forwarded-*` 会被信任。
-- `server.tls.mode=file`：启用原生 HTTPS；证书按 `reload_seconds` 原子热加载，失败时继续使用旧证书。
-- `server.tls.hsts=true`：只在 HTTPS 永久启用后打开。
-- `storage.root`：`meta/`、`cas/`、`uploads/`、`tmp/`、`trash/` 必须位于同一文件系统。
-- `storage.max_bytes` / `cache_max_bytes`：总逻辑配额与代理缓存配额；本地内容不会被缓存 LRU 删除。
-- `proxy.path_prefix`：路径模式前缀，默认 `r`。
+## Security and production notes
 
-完整字段与注释见 `crproxy.example.yaml`。部署方式见 `docs/deployment.md`。
+- Terminate TLS before exposing the service to untrusted networks. Set `server.public_scheme: https` and configure `server.public_host` to the real client-facing hostname.
+- Change the bootstrap administrator password immediately. On account compromise, rotate passwords **and revoke API tokens**; token revocation is a separate operation.
+- Treat the management plane, including `/api/v1` and `/metrics`, as a trusted-network endpoint. Protect it with a reverse proxy, network policy, or an additional authentication layer if it is reachable from an untrusted network.
+- Configure `trusted_proxies` only for proxies you control. Ensure the edge proxy overwrites client-supplied forwarding headers instead of blindly appending them.
+- Keep `master.key`, `jwt.secret`, `crproxy.db`, and the CAS on encrypted storage where required by your security model. Back them up together; losing the master key makes stored upstream credentials unrecoverable.
+- Run exactly one crproxy process per data directory. The process acquires a data-directory lock and does not support shared storage between instances.
+- The current authorization model is global `admin`/`operator`/`viewer` plus PAT action scopes. **Repository-level ACLs are not implemented.** Deploy the current version only where operators share a trust boundary, or add network-level isolation between teams.
+- Backups are offline operations: stop the service before running `crproxy backup` or `crproxy restore`. Test restore procedures in a clean environment before relying on them.
 
-## 运维
+Report vulnerabilities through the process in [SECURITY.md](SECURITY.md). Do not disclose security details in a public issue before a fix is available.
+
+## Operations
 
 ```bash
 bin/crproxy backup -config /etc/crproxy/crproxy.yaml -output /backup/crproxy.tar.gz
 bin/crproxy restore -config /etc/crproxy/crproxy.yaml -input /backup/crproxy.tar.gz --force
 bin/crproxy rotate-master-key -config /etc/crproxy/crproxy.yaml
-bin/crproxy healthcheck -url http://127.0.0.1:5000/api/v1/readyz
+bin/crproxy healthcheck -url http://127.0.0.1:5000/readyz
 ```
 
-端点：
+Endpoints:
 
-- `GET /api/v1/healthz`：进程存活。
-- `GET /api/v1/readyz`：SQLite 与存储可用。
-- `GET /metrics`：Prometheus。
-- 管理 API 与 OpenAPI：`docs/openapi.yaml`。
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /healthz` | Process liveness. |
+| `GET /readyz` | SQLite and storage readiness. |
+| `GET /api/v1/healthz` | Legacy management-plane liveness path. |
+| `GET /api/v1/readyz` | Legacy management-plane readiness path. |
+| `GET /metrics` | Prometheus metrics. Intended for a trusted monitoring network. |
 
-## 明确边界
+When `server.admin.listen` is different from `server.listen`, the registry listener serves only the OCI Distribution API, while the management listener serves the console, `/api/v1`, `/metrics`, and probe endpoints. When no separate management address is configured, both planes share the registry listener.
 
-- 单实例、本地块存储；不支持对象存储、多实例共享、跨地域复制。
-- 不支持 OIDC、LDAP、SAML。
-- 不支持 Docker schema1。
-- 不做漏洞扫描、签名策略、镜像复制和仓库级 ACL；权限模型为 admin/operator/viewer + PAT scope。
-- 代理上游不可写，这不是配置项。
+## Limitations
 
-## 文档
+- Single instance with local block storage. Object storage, multi-instance shared storage, distributed locking, and cross-region replication are not supported.
+- No OIDC, LDAP, or SAML integration; accounts are local.
+- No Docker schema1 support.
+- No repository-level ACL or project/tenant model.
+- No vulnerability scanning, signature verification policy, image replication, or admission policy.
+- Proxy routes are strictly read-only. Write requests to proxy routes return `405` and are never forwarded upstream.
+- Offline backup only; no online snapshot or point-in-time recovery.
+- No built-in high availability, automated failover, or commercial support SLA.
 
-- 总体设计：`DESIGN.md`
-- 协议实现：`docs/registry-protocol-design.md`
-- 鉴权与 TLS：`docs/auth-design.md`
-- 存储与缓存：`docs/storage-design.md`
-- 前端：`docs/frontend-design.md`
-- 部署：`docs/deployment.md`
-- 验收：`docs/acceptance-baseline.md`
-- Conformance：`docs/conformance-report.md`
-- Podman 冒烟：`docs/podman-smoke.md`
+## Documentation
+
+- [Design and architecture](DESIGN.md) (Chinese)
+- [Registry protocol design](docs/registry-protocol-design.md) (Chinese)
+- [Authentication and TLS design](docs/auth-design.md) (Chinese)
+- [Storage and cache design](docs/storage-design.md) (Chinese)
+- [Frontend design](docs/frontend-design.md) (Chinese)
+- [Deployment and operations](docs/deployment.md) (Chinese)
+- [Release acceptance baseline](docs/acceptance-baseline.md) (Chinese)
+- [Commercial release checklist](docs/release-checklist.md)
+- [OCI conformance report](docs/conformance-report.md)
+- [Podman smoke test](docs/podman-smoke.md)
+- [OpenAPI document](docs/openapi.yaml)
+
+English translations of the detailed design documents are planned. The English README and the Chinese README are maintained as equivalent project entry points; if they diverge, the English README is authoritative for build and licensing information.
+
+## Contributing
+
+Contributions are welcome under the terms of the Apache License 2.0. Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. All commits must include a Developer Certificate of Origin sign-off.
+
+## License
+
+Copyright 2026 The crproxy Authors.
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+Commercial use is permitted by the license. Redistributions must preserve the license and applicable notices. Third-party components remain subject to their own licenses. The software is provided on an “AS IS” basis without warranties or conditions of any kind.
+
+Published container images include `LICENSE` and `NOTICE` under `/licenses`.

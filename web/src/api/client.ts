@@ -1,6 +1,6 @@
 import type {
   APIToken, APIErrorBody, AuditEvent, Breakdown, ContentEntry, EventTimeline, Job, ListResponse, Overview,
-  RepositoryReferrer, RepositorySummary, Session, StorageSettings, StorageSummaryFull, SystemInfo,
+  RepositoryReferrer, RepositorySummary, RuntimeConfig, RuntimeSection, Session, StorageSettings, StorageSummaryFull, SystemInfo,
   TagSummary, Upstream, UpstreamInput, Upload, User,
 } from "@/api/types";
 
@@ -49,6 +49,10 @@ export const api = {
   logout: () => request<void>("/api/v1/auth/logout", { method: "POST" }),
   changePassword: (currentPassword: string, newPassword: string) => request<void>("/api/v1/auth/password", { method: "POST", body: JSON.stringify({ currentPassword, newPassword }) }),
   systemInfo: () => request<SystemInfo>("/api/v1/system/info"),
+  runtimeSettings: () => request<RuntimeConfig>("/api/v1/settings/runtime"),
+  updateRuntimeSection: <T extends object>(section: RuntimeSection, expectedVersion: number, values: T) => request<RuntimeConfig>(`/api/v1/settings/runtime/${section}`, { method: "PUT", body: JSON.stringify({ expectedVersion, ...values }) }),
+  resetRuntimeSection: (section: RuntimeSection, expectedVersion: number) => request<RuntimeConfig>(`/api/v1/settings/runtime/${section}/reset`, { method: "POST", body: JSON.stringify({ expectedVersion }) }),
+  testOutboundProxy: (url?: string) => request<{ url: string; status: number; durationMs: number }>("/api/v1/settings/runtime/outbound-proxy/test", { method: "POST", body: JSON.stringify(url ? { url } : {}) }),
   overview: () => request<Overview>("/api/v1/overview"),
   eventTimeline: (hours = 24) => request<EventTimeline>(`/api/v1/events/timeline?hours=${hours}`),
 

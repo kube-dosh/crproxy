@@ -1,0 +1,3 @@
+# Install as /etc/sysusers.d/crproxy.conf and run: systemd-sysusers
+# The leading ! preserves an existing crproxy account during package upgrades.
+u! crproxy - "crproxy OCI registry" /var/lib/crproxy /usr/sbin/nologin

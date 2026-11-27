@@ -201,7 +201,7 @@ func (s *Store) ListUpstreams(ctx context.Context) ([]Upstream, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var upstreams []Upstream
+	upstreams := make([]Upstream, 0)
 	for rows.Next() {
 		upstream, err := scanUpstream(rows)
 		if err != nil {

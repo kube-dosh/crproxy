@@ -53,7 +53,7 @@ func (s *Store) ListRegistryEvents(ctx context.Context, limit int) ([]RegistryEv
 		return nil, err
 	}
 	defer rows.Close()
-	var result []RegistryEvent
+	result := make([]RegistryEvent, 0)
 	for rows.Next() {
 		var item RegistryEvent
 		var at int64
@@ -112,7 +112,7 @@ func (s *Store) EventBucketsSince(ctx context.Context, since time.Time) ([]Event
 		return nil, err
 	}
 	defer rows.Close()
-	var result []EventBucket
+	result := make([]EventBucket, 0)
 	for rows.Next() {
 		var item EventBucket
 		var at int64

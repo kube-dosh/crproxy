@@ -95,7 +95,7 @@ func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var users []User
+	users := make([]User, 0)
 	for rows.Next() {
 		var user User
 		var enabled, mustChange int

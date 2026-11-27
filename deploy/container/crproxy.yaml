@@ -5,6 +5,13 @@ server:
   tls:
     mode: ""
   trusted_proxies: []
+  # Uncomment to serve the management console on a separate listener.
+  # admin:
+  #   listen: "0.0.0.0:5443"
+  #   public_host: "localhost:5443"
+  #   public_scheme: "http"
+  #   tls:
+  #     mode: "none"
 
 auth:
   registry:

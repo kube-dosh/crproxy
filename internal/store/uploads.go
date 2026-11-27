@@ -20,23 +20,25 @@ func (s *Store) CreateUpload(ctx context.Context, uploadID string, repositoryID 
 	now := unixNow()
 	_, err := s.DB.ExecContext(ctx, `
 		INSERT INTO uploads(id, repo_id, user_id, size, state, created_at, updated_at, expires_at)
-		VALUES(?, ?, ?, 0, 'created', ?, ?, ?)`,
+		VALUES(?, ?, NULLIF(?, ''), 0, 'created', ?, ?, ?)`,
 		uploadID, repositoryID, userID, now, now, expiresAt.UTC().Unix())
 	return err
 }
 
 func (s *Store) UploadByID(ctx context.Context, uploadID string) (Upload, error) {
 	var upload Upload
+	var userID sql.NullString
 	var expiresAt int64
 	err := s.DB.QueryRowContext(ctx, `
 		SELECT id, repo_id, user_id, size, state, expires_at FROM uploads WHERE id = ?`, uploadID).
-		Scan(&upload.ID, &upload.RepoID, &upload.UserID, &upload.Size, &upload.State, &expiresAt)
+		Scan(&upload.ID, &upload.RepoID, &userID, &upload.Size, &upload.State, &expiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Upload{}, ErrNotFound
 	}
 	if err != nil {
 		return Upload{}, err
 	}
+	upload.UserID = userID.String
 	upload.ExpiresAt = time.Unix(expiresAt, 0).UTC()
 	return upload, nil
 }
@@ -59,7 +61,7 @@ func (s *Store) ExpireUploads(ctx context.Context, before time.Time) ([]string, 
 		return nil, err
 	}
 	defer rows.Close()
-	var ids []string
+	ids := make([]string, 0)
 	for rows.Next() {
 		var uploadID string
 		if err := rows.Scan(&uploadID); err != nil {

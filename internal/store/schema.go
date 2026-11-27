@@ -11,7 +11,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schemaVersion = 3
+const schemaVersion = 4
 
 const schemaV1 = `
 CREATE TABLE IF NOT EXISTS users (
@@ -230,6 +230,24 @@ CREATE INDEX IF NOT EXISTS idx_registry_events_upstream ON registry_events(upstr
 CREATE INDEX IF NOT EXISTS idx_contents_unreferenced ON contents(digest);
 `
 
+const schemaV4 = `
+CREATE TABLE uploads_v4 (
+  id TEXT PRIMARY KEY,
+  repo_id INTEGER NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+  user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+  size INTEGER NOT NULL DEFAULT 0,
+  state TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+INSERT INTO uploads_v4(id, repo_id, user_id, size, state, created_at, updated_at, expires_at)
+  SELECT id, repo_id, user_id, size, state, created_at, updated_at, expires_at FROM uploads;
+DROP TABLE uploads;
+ALTER TABLE uploads_v4 RENAME TO uploads;
+CREATE INDEX IF NOT EXISTS idx_uploads_expiry ON uploads(expires_at);
+`
+
 func Open(ctx context.Context, path string) (*sql.DB, error) {
 	if path == "" {
 		return nil, fmt.Errorf("database path is required")
@@ -302,7 +320,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 	if version == schemaVersion {
 		return nil
 	}
-	migrations := []string{schemaV1, schemaV2, schemaV3}
+	migrations := []string{schemaV1, schemaV2, schemaV3, schemaV4}
 	for next := version + 1; next <= schemaVersion; next++ {
 		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {

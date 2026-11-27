@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"crproxy/internal/netutil"
@@ -52,11 +53,13 @@ type UpsertInput struct {
 }
 
 type Manager struct {
-	mu     sync.Mutex
-	store  *store.Store
-	proxy  *proxy.Handler
-	keys   KeyProvider
-	logger *slog.Logger
+	mu            sync.Mutex
+	store         *store.Store
+	proxy         *proxy.Handler
+	keys          KeyProvider
+	logger        *slog.Logger
+	outboundProxy atomic.Pointer[proxy.OutboundProxy]
+	upstreams     []*proxy.Upstream
 }
 
 type KeyProvider interface {
@@ -97,6 +100,21 @@ func NewWithKeyProvider(metadata *store.Store, proxyHandler *proxy.Handler, keys
 	return &Manager{store: metadata, proxy: proxyHandler, keys: keys, logger: logger}, nil
 }
 
+func (m *Manager) SetOutboundProxy(outboundProxy *proxy.OutboundProxy) error {
+	if _, err := outboundProxy.ProxyFunc(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.outboundProxy.Store(outboundProxy)
+	for _, upstream := range m.upstreams {
+		if err := upstream.SetOutboundProxy(outboundProxy); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (m *Manager) Reload(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -119,7 +137,11 @@ func (m *Manager) reloadLocked(ctx context.Context) error {
 		}
 		upstreams = append(upstreams, upstream)
 	}
-	return m.proxy.ReplaceUpstreams(upstreams)
+	if err := m.proxy.ReplaceUpstreams(upstreams); err != nil {
+		return err
+	}
+	m.upstreams = upstreams
+	return nil
 }
 
 func (m *Manager) Upsert(ctx context.Context, input UpsertInput) (store.Upstream, error) {
@@ -271,6 +293,7 @@ func (m *Manager) upstreamFromRecord(record store.Upstream, credentials Credenti
 		TagTTL:             time.Duration(record.TagTTLSeconds) * time.Second,
 		RequestTimeout:     time.Duration(record.RequestTimeoutSecs) * time.Second,
 		MaxBlobBytes:       valueOrZero(record.MaxBlobBytes),
+		OutboundProxy:      m.outboundProxy.Load(),
 	})
 }
 

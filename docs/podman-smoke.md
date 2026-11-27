@@ -105,7 +105,7 @@ writing blob: initiating layer upload to /v2/r/quay/crproxy-smoke/blobs/uploads/
 
 ## 7. PAT 拉取
 
-通过管理 API 创建只读 PAT 后，将 PAT 作为 Podman 密码完成 Basic 登录并拉取 Quay 镜像。结果成功，证明 PAT scope 与 Registry pull 鉴权链路可用。
+通过管理台 Session 创建只读 PAT 后，将 PAT 作为 Podman 密码完成 Distribution Basic 登录并拉取 Quay 镜像。结果成功，证明 PAT scope 与 Registry pull 鉴权链路可用；PAT 本身不能调用管理 API。
 
 ## 8. 原生 HTTPS + Basic challenge
 
@@ -142,7 +142,16 @@ GET / 返回内嵌 React 管理台：200
 
 ## 10. HTTP/HTTPS 出站代理
 
-当前环境直连 Docker Hub 时 TLS 建连被重置，registry.k8s.io 的 manifest 重定向目标超时。使用本机 HTTP CONNECT 代理 `127.0.0.1:1080` 后，crproxy 的真实回源恢复：
+当前环境直连 Docker Hub 时 TLS 建连被重置，registry.k8s.io 的 manifest 重定向目标超时。启动基线使用本机 HTTP CONNECT 代理 `127.0.0.1:1080`：
+
+```yaml
+outbound_proxy:
+  http_proxy: http://127.0.0.1:1080
+  https_proxy: http://127.0.0.1:1080
+  no_proxy: 127.0.0.1,localhost
+```
+
+`outbound_proxy` 块省略时仍回退到 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY`。管理台“系统设置 → 出站代理”保存的运行时覆盖会立即替换已构建上游 Transport 使用的代理，并关闭旧空闲连接。
 
 ```bash
 PODMAN='podman --root /tmp/crproxy-proxy-podman/root --runroot /tmp/crproxy-proxy-podman/runroot'
@@ -154,19 +163,25 @@ $PODMAN pull --authfile "$AUTH" --tls-verify=false \
   127.0.0.1:15023/r/k8s/pause:3.10
 ```
 
-结果：
+运行时代理热切换结果：
 
 ```text
-Docker Hub busybox:latest     首次 4.65s，删除本地镜像后 0.53s
-registry.k8s.io pause:3.10    首次 2.84s，删除本地镜像后 0.56s
+Docker Hub busybox:latest     首次 12.60s，删除本地镜像后 1.42s
+registry.k8s.io pause:3.10    首次 9.27s
+Docker Hub hello-world:latest 切到不可用代理 127.0.0.1:1081 后返回 502
+Docker Hub hello-world:latest 切回 127.0.0.1:1080 后拉取成功
 ```
 
-服务端进程环境已核对为 `HTTP_PROXY=http://127.0.0.1:1080`、`HTTPS_PROXY=http://127.0.0.1:1080`。Docker Hub challenge、manifest、config、layer 和 registry.k8s.io 的跨域重定向均通过代理完成；第二次拉取由 crproxy 缓存命中。Podman 本身直连本地 crproxy，不使用该出站代理。
+临时验收实例的进程环境已清空全部代理变量。先创建上游，再通过管理 API 把出站代理从空值热切换到 `127.0.0.1:1080`，证明既有上游立即使用新代理；死代理失败与切回成功的对照证明下一次上游请求没有复用旧 Transport。Podman 本身直连本地 crproxy，不使用出站代理。
 
 自动化回归测试使用独立子进程和本地测试代理，避免 Go `ProxyFromEnvironment` 的进程级缓存掩盖回归：
 
 - `TestUpstreamUsesHTTPProxyFromEnvironment`：验证 `HTTP_PROXY` 的绝对 URI 转发。
 - `TestUpstreamUsesHTTPSProxyTunnelFromEnvironment`：验证 `HTTPS_PROXY` 的 CONNECT 隧道。
+- `TestUpstreamUsesConfiguredHTTPProxy`：验证 YAML 配置的 HTTP 代理。
+- `TestUpstreamConfiguredProxyHonorsNoProxy`：验证配置中的 `NO_PROXY` 绕过规则。
+- `TestUpstreamConfiguredProxySendsCredentials`：验证配置中的代理 Basic 凭证。
+- `TestUpstreamHotSwitchesConfiguredProxy`：验证不重建上游即可让下一条请求切换到新代理。
 
 ## 11. 自动化验证
 

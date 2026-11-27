@@ -9,6 +9,6 @@ export function StatusBadge({ value, labels }: { value?: string; labels?: Record
       : normalized === "warning" || normalized === "high" || normalized === "stale" || normalized === "queued" || normalized === "running"
         ? "warning"
         : "secondary";
-  const fallback: Record<string, string> = { unknown: "未知", success: "成功", healthy: "健康", unhealthy: "异常", failure: "失败", failed: "失败", error: "错误", queued: "排队中", running: "运行中", succeeded: "已完成", active: "活动", stale: "已过期", normal: "正常", high: "高水位", critical: "临界", emergency: "紧急" };
+  const fallback: Record<string, string> = { unknown: "未知", success: "成功", healthy: "健康", unhealthy: "异常", failure: "失败", failed: "失败", error: "错误", queued: "排队中", running: "运行中", succeeded: "已完成", active: "活跃", stale: "已过期", normal: "正常", high: "高水位", critical: "临界", emergency: "紧急", denied: "已拒绝", accepted: "已受理", disabled: "已停用", pending: "处理中" };
   return <Badge variant={variant}>{labels?.[normalized] ?? fallback[normalized] ?? normalized}</Badge>;
 }

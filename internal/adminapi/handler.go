@@ -2,6 +2,7 @@ package adminapi
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"crproxy/internal/cas"
 	"crproxy/internal/jobs"
 	"crproxy/internal/requestinfo"
+	"crproxy/internal/runtimeconfig"
 	"crproxy/internal/storage"
 	"crproxy/internal/store"
 	"crproxy/internal/upstreammgr"
@@ -31,36 +33,46 @@ type Config struct {
 	AuditRetention  time.Duration
 	RequestInfo     *requestinfo.Resolver
 	PublicURL       string
+	RegistryURL     string
+	DeploymentMode  string
+	RegistryListen  string
+	AdminListen     string
 	ProxyPathPrefix string
 	AllowAnonymous  bool
+	Runtime         *runtimeconfig.Manager
 }
 
 type Handler struct {
-	Store          *store.Store
-	Auth           *auth.Authenticator
-	Logger         *slog.Logger
-	csrfSecret     []byte
-	sessionTTL     time.Duration
-	sessionIdle    time.Duration
-	secureCookie   bool
-	version        string
-	startedAt      time.Time
-	limiter        *loginLimiter
-	upstreams      *upstreammgr.Manager
-	storage        *storage.Manager
-	jobs           *jobs.Runner
-	cas            *cas.Store
-	auditRetention time.Duration
-	requestInfo    *requestinfo.Resolver
-	publicURL      string
-	proxyPrefix    string
-	allowAnonymous bool
-	mux            *http.ServeMux
+	Store             *store.Store
+	Logger            *slog.Logger
+	csrfSecret        []byte
+	sessionTTL        time.Duration
+	sessionIdle       time.Duration
+	secureCookie      bool
+	dummyPasswordHash string
+	version           string
+	startedAt         time.Time
+	limiter           *loginLimiter
+	upstreams         *upstreammgr.Manager
+	storage           *storage.Manager
+	jobs              *jobs.Runner
+	cas               *cas.Store
+	auditRetention    time.Duration
+	requestInfo       *requestinfo.Resolver
+	publicURL         string
+	registryURL       string
+	deploymentMode    string
+	registryListen    string
+	adminListen       string
+	proxyPrefix       string
+	allowAnonymous    bool
+	runtime           *runtimeconfig.Manager
+	mux               *http.ServeMux
 }
 
-func NewHandler(metadata *store.Store, authenticator *auth.Authenticator, cfg Config, logger *slog.Logger) (*Handler, error) {
-	if metadata == nil || authenticator == nil {
-		return nil, errors.New("admin API store and authenticator are required")
+func NewHandler(metadata *store.Store, cfg Config, logger *slog.Logger) (*Handler, error) {
+	if metadata == nil {
+		return nil, errors.New("admin API store is required")
 	}
 	if cfg.Upstreams == nil {
 		return nil, errors.New("admin API upstream manager is required")
@@ -94,25 +106,30 @@ func NewHandler(metadata *store.Store, authenticator *auth.Authenticator, cfg Co
 		cfg.RequestInfo = resolver
 	}
 	h := &Handler{
-		Store:          metadata,
-		Auth:           authenticator,
-		Logger:         logger,
-		csrfSecret:     append([]byte(nil), cfg.CSRFSecret...),
-		sessionTTL:     cfg.SessionTTL,
-		sessionIdle:    cfg.SessionIdleTTL,
-		secureCookie:   cfg.SecureCookies,
-		version:        cfg.Version,
-		startedAt:      cfg.StartedAt.UTC(),
-		limiter:        newLoginLimiter(),
-		upstreams:      cfg.Upstreams,
-		storage:        cfg.Storage,
-		jobs:           cfg.Jobs,
-		cas:            cfg.CAS,
-		auditRetention: cfg.AuditRetention,
-		requestInfo:    cfg.RequestInfo,
-		publicURL:      strings.TrimRight(cfg.PublicURL, "/"),
-		proxyPrefix:    cfg.ProxyPathPrefix,
-		allowAnonymous: cfg.AllowAnonymous,
+		Store:             metadata,
+		Logger:            logger,
+		csrfSecret:        append([]byte(nil), cfg.CSRFSecret...),
+		sessionTTL:        cfg.SessionTTL,
+		sessionIdle:       cfg.SessionIdleTTL,
+		secureCookie:      cfg.SecureCookies,
+		dummyPasswordHash: auth.DummyPasswordHash(),
+		version:           cfg.Version,
+		startedAt:         cfg.StartedAt.UTC(),
+		limiter:           newLoginLimiter(),
+		upstreams:         cfg.Upstreams,
+		storage:           cfg.Storage,
+		jobs:              cfg.Jobs,
+		cas:               cfg.CAS,
+		auditRetention:    cfg.AuditRetention,
+		requestInfo:       cfg.RequestInfo,
+		publicURL:         strings.TrimRight(cfg.PublicURL, "/"),
+		registryURL:       strings.TrimRight(cfg.RegistryURL, "/"),
+		deploymentMode:    cfg.DeploymentMode,
+		registryListen:    cfg.RegistryListen,
+		adminListen:       cfg.AdminListen,
+		proxyPrefix:       cfg.ProxyPathPrefix,
+		allowAnonymous:    cfg.AllowAnonymous,
+		runtime:           cfg.Runtime,
 	}
 	h.mux = h.routes()
 	return h, nil
@@ -123,13 +140,44 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	requestID := strings.TrimSpace(r.Header.Get("X-Request-Id"))
 	if requestID == "" || len(requestID) > 128 {
 		requestID = newRequestID()
 	}
 	w.Header().Set("X-Request-Id", requestID)
 	ctx := context.WithValue(r.Context(), requestIDKey{}, requestID)
-	h.mux.ServeHTTP(w, r.WithContext(ctx))
+	r = r.WithContext(ctx)
+
+	// The management plane is cookie-session-only. Authenticate at the routing
+	// boundary so future /api/v1 handlers cannot accidentally accept registry
+	// Basic/Bearer credentials or bypass session expiry and logout.
+	if r.URL.Path != "/api/v1/auth/login" {
+		p, err := h.authenticateSession(r)
+		if err != nil {
+			h.clearSessionCookie(w)
+			writeAPIError(w, http.StatusUnauthorized, "unauthenticated", "authentication required")
+			return
+		}
+		if !safeMethod(r.Method) {
+			if !h.originAllowed(r) {
+				writeAPIError(w, http.StatusForbidden, "origin_invalid", "request origin is not allowed")
+				return
+			}
+			provided := r.Header.Get("X-CSRF-Token")
+			actual := hashToken(provided)
+			if provided == "" || subtle.ConstantTimeCompare([]byte(actual), []byte(p.SessionIDHashCSRF())) != 1 {
+				writeAPIError(w, http.StatusForbidden, "csrf_invalid", "CSRF token is missing or invalid")
+				return
+			}
+		}
+		if p.MustChange && !passwordChangeAllowedPath(r.URL.Path) {
+			writeAPIError(w, http.StatusForbidden, "password_change_required", "password change is required before using the management API")
+			return
+		}
+		r = r.WithContext(context.WithValue(r.Context(), sessionPrincipalContextKey{}, p))
+	}
+	h.mux.ServeHTTP(w, r)
 }
 
 func (h *Handler) routes() *http.ServeMux {
@@ -140,6 +188,10 @@ func (h *Handler) routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/v1/auth/password", h.authenticated("", h.handlePasswordChange))
 
 	mux.HandleFunc("GET /api/v1/system/info", h.authenticated("", h.handleSystemInfo))
+	mux.HandleFunc("GET /api/v1/settings/runtime", h.authenticated("manage", h.handleRuntimeSettingsGet))
+	mux.HandleFunc("PUT /api/v1/settings/runtime/{section}", h.authenticated("manage", h.handleRuntimeSettingsPut))
+	mux.HandleFunc("POST /api/v1/settings/runtime/{section}/reset", h.authenticated("manage", h.handleRuntimeSettingsReset))
+	mux.HandleFunc("POST /api/v1/settings/runtime/outbound-proxy/test", h.authenticated("admin", h.handleOutboundProxyTest))
 	mux.HandleFunc("GET /api/v1/overview", h.authenticated("", h.handleOverview))
 	mux.HandleFunc("GET /api/v1/events/timeline", h.authenticated("", h.handleEventTimeline))
 	mux.HandleFunc("GET /api/v1/registry/summary", h.authenticated("", h.handleRegistrySummary))

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"crproxy/internal/config"
+	"crproxy/internal/requestinfo"
 )
 
 func TestAcquireLockRejectsSecondProcess(t *testing.T) {
@@ -77,5 +78,28 @@ func TestHealthcheckSucceedsOnlyOn2xx(t *testing.T) {
 func TestHealthcheckRejectsInvalidTimeout(t *testing.T) {
 	if err := runHealthcheck([]string{"-url", "http://127.0.0.1", "-timeout", "0s"}); err == nil {
 		t.Fatal("non-positive timeout must fail")
+	}
+}
+
+func TestSecurityHeadersReadHSTSDynamically(t *testing.T) {
+	resolver, err := requestinfo.New(nil, "https")
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled := false
+	handler := securityHeadersMiddleware(resolver, func() bool { return enabled }, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	request := httptest.NewRequest(http.MethodGet, "https://registry.test/", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Header().Get("Strict-Transport-Security") != "" {
+		t.Fatal("HSTS must be absent while disabled")
+	}
+	enabled = true
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Header().Get("Strict-Transport-Security") == "" {
+		t.Fatal("HSTS must be emitted immediately after enabling")
 	}
 }

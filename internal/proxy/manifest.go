@@ -68,7 +68,7 @@ func (h *Handler) serveManifest(w http.ResponseWriter, r *http.Request, upstream
 		writeUpstreamError(w)
 		return
 	}
-	manifestLimit := h.MaxManifestBytes
+	manifestLimit := h.maxManifestBytes()
 	if manifestLimit <= 0 {
 		manifestLimit = 4 << 20
 	}

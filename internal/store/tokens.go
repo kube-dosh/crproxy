@@ -97,7 +97,7 @@ func (s *Store) ListAPITokens(ctx context.Context, userID string) ([]APIToken, e
 		return nil, err
 	}
 	defer rows.Close()
-	var tokens []APIToken
+	tokens := make([]APIToken, 0)
 	for rows.Next() {
 		token, err := scanAPIToken(rows)
 		if err != nil {

@@ -499,7 +499,7 @@ scope=repository:library/nginx:push,delete
 
 JWT `access.actions` 必须包含当前操作需要的动作。详细规则见 [`auth-design.md`](auth-design.md)。
 
-`/v2/_catalog` 不使用 repository scope；通过 Basic/PAT/管理台 Session 并按 `manage` 或 `admin` 授权。Docker token flow 不签发 catalog 权限，避免把仓库枚举能力下放给普通 pull token。
+`/v2/_catalog` 不使用 repository scope；通过 Distribution 的 Basic/PAT 凭据并按 `manage` 或 `admin` 授权。管理台 Session 不属于 Distribution 凭据。Docker token flow 不签发 catalog 权限，避免把仓库枚举能力下放给普通 pull token。
 
 ## 10. 并发、幂等和事务
 
