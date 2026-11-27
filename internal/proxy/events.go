@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"crproxy/internal/store"
+	"github.com/kube-dosh/crproxy/internal/store"
 )
 
 func (h *Handler) acquireDownload(ctx context.Context) (func(), error) {

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"crproxy/internal/id"
+	"github.com/kube-dosh/crproxy/internal/id"
 )
 
 type APIToken struct {

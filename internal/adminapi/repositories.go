@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"crproxy/internal/oci"
-	"crproxy/internal/store"
+	"github.com/kube-dosh/crproxy/internal/oci"
+	"github.com/kube-dosh/crproxy/internal/store"
 )
 
 func (h *Handler) handleRepositoryList(w http.ResponseWriter, r *http.Request, _ *principal) {

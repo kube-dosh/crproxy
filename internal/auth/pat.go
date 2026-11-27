@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"strings"
 
-	"crproxy/internal/id"
+	"github.com/kube-dosh/crproxy/internal/id"
 )
 
 func GeneratePAT() (full, tokenID, prefix, secretHash string, err error) {

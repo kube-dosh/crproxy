@@ -7,10 +7,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"crproxy/internal/cas"
-	"crproxy/internal/proxy"
-	"crproxy/internal/secretbox"
-	"crproxy/internal/store"
+	"github.com/kube-dosh/crproxy/internal/cas"
+	"github.com/kube-dosh/crproxy/internal/proxy"
+	"github.com/kube-dosh/crproxy/internal/secretbox"
+	"github.com/kube-dosh/crproxy/internal/store"
 )
 
 type managerTestEnv struct {

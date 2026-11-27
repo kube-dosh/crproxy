@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"crproxy/internal/oci"
+	"github.com/kube-dosh/crproxy/internal/oci"
 )
 
 var uploadIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{8,128}$`)

@@ -1,4 +1,4 @@
-module crproxy
+module github.com/kube-dosh/crproxy
 
 go 1.24
 

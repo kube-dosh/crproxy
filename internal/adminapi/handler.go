@@ -9,14 +9,14 @@ import (
 	"strings"
 	"time"
 
-	"crproxy/internal/auth"
-	"crproxy/internal/cas"
-	"crproxy/internal/jobs"
-	"crproxy/internal/requestinfo"
-	"crproxy/internal/runtimeconfig"
-	"crproxy/internal/storage"
-	"crproxy/internal/store"
-	"crproxy/internal/upstreammgr"
+	"github.com/kube-dosh/crproxy/internal/auth"
+	"github.com/kube-dosh/crproxy/internal/cas"
+	"github.com/kube-dosh/crproxy/internal/jobs"
+	"github.com/kube-dosh/crproxy/internal/requestinfo"
+	"github.com/kube-dosh/crproxy/internal/runtimeconfig"
+	"github.com/kube-dosh/crproxy/internal/storage"
+	"github.com/kube-dosh/crproxy/internal/store"
+	"github.com/kube-dosh/crproxy/internal/upstreammgr"
 )
 
 type Config struct {

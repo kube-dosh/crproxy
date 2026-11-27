@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"crproxy/internal/oci"
+	"github.com/kube-dosh/crproxy/internal/oci"
 )
 
 func TestBlobStoreAndOpen(t *testing.T) {

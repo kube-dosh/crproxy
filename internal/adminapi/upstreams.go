@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"time"
 
-	"crproxy/internal/store"
-	"crproxy/internal/upstreammgr"
+	"github.com/kube-dosh/crproxy/internal/store"
+	"github.com/kube-dosh/crproxy/internal/upstreammgr"
 )
 
 type upstreamCredentialsRequest struct {

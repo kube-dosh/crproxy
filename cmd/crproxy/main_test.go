@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"crproxy/internal/config"
-	"crproxy/internal/requestinfo"
+	"github.com/kube-dosh/crproxy/internal/config"
+	"github.com/kube-dosh/crproxy/internal/requestinfo"
 )
 
 func TestAcquireLockRejectsSecondProcess(t *testing.T) {

@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"crproxy/internal/netutil"
-	"crproxy/internal/oci"
+	"github.com/kube-dosh/crproxy/internal/netutil"
+	"github.com/kube-dosh/crproxy/internal/oci"
 
 	"gopkg.in/yaml.v3"
 )

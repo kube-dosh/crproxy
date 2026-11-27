@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"crproxy/internal/id"
+	"github.com/kube-dosh/crproxy/internal/id"
 )
 
 type User struct {

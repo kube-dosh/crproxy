@@ -13,11 +13,11 @@ import (
 	"syscall"
 	"time"
 
-	"crproxy/internal/auth"
-	"crproxy/internal/cas"
-	"crproxy/internal/oci"
-	"crproxy/internal/storage"
-	"crproxy/internal/store"
+	"github.com/kube-dosh/crproxy/internal/auth"
+	"github.com/kube-dosh/crproxy/internal/cas"
+	"github.com/kube-dosh/crproxy/internal/oci"
+	"github.com/kube-dosh/crproxy/internal/storage"
+	"github.com/kube-dosh/crproxy/internal/store"
 )
 
 const distributionVersion = "registry/2.0"

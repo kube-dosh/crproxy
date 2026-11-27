@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"crproxy/internal/id"
+	"github.com/kube-dosh/crproxy/internal/id"
 )
 
 var (

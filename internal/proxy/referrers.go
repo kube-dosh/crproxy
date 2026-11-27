@@ -4,7 +4,7 @@ import (
 	"io"
 	"net/http"
 
-	"crproxy/internal/oci"
+	"github.com/kube-dosh/crproxy/internal/oci"
 )
 
 func (h *Handler) serveReferrers(w http.ResponseWriter, r *http.Request, upstream *Upstream, route parsedRoute) {

@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 
-	"crproxy/internal/runtimeconfig"
-	"crproxy/internal/storage"
+	"github.com/kube-dosh/crproxy/internal/runtimeconfig"
+	"github.com/kube-dosh/crproxy/internal/storage"
 )
 
 func (h *Handler) handleStorageSummary(w http.ResponseWriter, r *http.Request, _ *principal) {

@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"net/url"
 
-	"crproxy/internal/oci"
-	"crproxy/internal/store"
+	"github.com/kube-dosh/crproxy/internal/oci"
+	"github.com/kube-dosh/crproxy/internal/store"
 )
 
 func (h *Handler) handleReferrers(w http.ResponseWriter, r *http.Request, route parsedRoute) {

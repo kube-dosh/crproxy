@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"time"
 
-	"crproxy/internal/store"
+	"github.com/kube-dosh/crproxy/internal/store"
 )
 
 func (h *Handler) handleOverview(w http.ResponseWriter, r *http.Request, _ *principal) {

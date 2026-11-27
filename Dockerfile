@@ -12,12 +12,14 @@ RUN npm run build
 
 FROM ${GO_IMAGE} AS build
 ARG VERSION=0.1.0-dev
+ARG TARGETOS=linux
+ARG TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=web /src/web/dist ./web/dist
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+RUN CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH:-$(go env GOARCH)}" go build -trimpath \
     -ldflags "-s -w -X main.version=${VERSION}" \
     -o /out/crproxy ./cmd/crproxy
 

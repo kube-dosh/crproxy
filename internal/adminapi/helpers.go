@@ -13,9 +13,9 @@ import (
 	"strconv"
 	"time"
 
-	"crproxy/internal/auth"
-	"crproxy/internal/id"
-	"crproxy/internal/store"
+	"github.com/kube-dosh/crproxy/internal/auth"
+	"github.com/kube-dosh/crproxy/internal/id"
+	"github.com/kube-dosh/crproxy/internal/store"
 )
 
 const maxJSONBody = 1 << 20

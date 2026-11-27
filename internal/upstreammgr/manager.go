@@ -13,11 +13,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"crproxy/internal/netutil"
-	"crproxy/internal/oci"
-	"crproxy/internal/proxy"
-	"crproxy/internal/secretbox"
-	"crproxy/internal/store"
+	"github.com/kube-dosh/crproxy/internal/netutil"
+	"github.com/kube-dosh/crproxy/internal/oci"
+	"github.com/kube-dosh/crproxy/internal/proxy"
+	"github.com/kube-dosh/crproxy/internal/secretbox"
+	"github.com/kube-dosh/crproxy/internal/store"
 )
 
 var routePrefixPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)

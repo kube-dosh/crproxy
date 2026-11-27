@@ -213,7 +213,7 @@ func (u *Upstream) Do(ctx context.Context, method, path, repository string, head
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("User-Agent", "crproxy/0.1")
+		req.Header.Set("User-Agent", "github.com/kube-dosh/crproxy/0.1")
 		for key, values := range headers {
 			for _, value := range values {
 				req.Header.Add(key, value)
@@ -340,7 +340,7 @@ func (u *Upstream) fetchToken(ctx context.Context, challenge bearerChallenge, re
 		return "", 0, err
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "crproxy/0.1")
+	req.Header.Set("User-Agent", "github.com/kube-dosh/crproxy/0.1")
 	if u.Username != "" {
 		req.SetBasicAuth(u.Username, u.Password)
 	}

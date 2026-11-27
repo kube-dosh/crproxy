@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"crproxy/internal/id"
-	"crproxy/internal/store"
+	"github.com/kube-dosh/crproxy/internal/id"
+	"github.com/kube-dosh/crproxy/internal/store"
 )
 
 type Runner struct {

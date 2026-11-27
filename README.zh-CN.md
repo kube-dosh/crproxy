@@ -45,7 +45,7 @@ crproxy **不是** Harbor 的平替。它不提供多租户项目、仓库级 AC
 ### 构建与运行
 
 ```bash
-git clone https://codeberg.org/aido/crproxy.git
+git clone https://github.com/kube-dosh/crproxy.git
 cd crproxy
 
 cp crproxy.example.yaml crproxy.yaml

@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"crproxy/internal/cas"
-	"crproxy/internal/oci"
-	"crproxy/internal/store"
+	"github.com/kube-dosh/crproxy/internal/cas"
+	"github.com/kube-dosh/crproxy/internal/oci"
+	"github.com/kube-dosh/crproxy/internal/store"
 )
 
 func newTestManager(t *testing.T, maxBytes, cacheMaxBytes int64) (*Manager, *store.Store) {

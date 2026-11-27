@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"crproxy/internal/store"
+	"github.com/kube-dosh/crproxy/internal/store"
 )
 
 func TestRunnerRecordsProgressResultCancelTimeoutAndPanic(t *testing.T) {

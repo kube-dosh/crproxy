@@ -11,8 +11,8 @@ import (
 	"strconv"
 	"strings"
 
-	"crproxy/internal/oci"
-	"crproxy/internal/store"
+	"github.com/kube-dosh/crproxy/internal/oci"
+	"github.com/kube-dosh/crproxy/internal/store"
 )
 
 func (h *Handler) serveManifest(w http.ResponseWriter, r *http.Request, upstream *Upstream, route parsedRoute) {

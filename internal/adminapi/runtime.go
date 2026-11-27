@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"crproxy/internal/proxy"
-	"crproxy/internal/runtimeconfig"
+	"github.com/kube-dosh/crproxy/internal/proxy"
+	"github.com/kube-dosh/crproxy/internal/runtimeconfig"
 )
 
 type runtimeUpdate struct {

@@ -1,6 +1,6 @@
 [Unit]
 Description=crproxy OCI Distribution registry and pull-through cache
-Documentation=https://codeberg.org/aido/crproxy
+Documentation=https://github.com/kube-dosh/crproxy
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=60s

@@ -4,8 +4,8 @@ import (
 	"errors"
 	"net/http"
 
-	"crproxy/internal/auth"
-	"crproxy/internal/store"
+	"github.com/kube-dosh/crproxy/internal/auth"
+	"github.com/kube-dosh/crproxy/internal/store"
 	sqlite "modernc.org/sqlite"
 )
 

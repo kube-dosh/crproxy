@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"crproxy/internal/store"
+	"github.com/kube-dosh/crproxy/internal/store"
 )
 
 func (h *Handler) handleAuditList(w http.ResponseWriter, r *http.Request, _ *principal) {

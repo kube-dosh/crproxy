@@ -8,9 +8,9 @@ import (
 	"net/http"
 	"strconv"
 
-	"crproxy/internal/cas"
-	"crproxy/internal/oci"
-	"crproxy/internal/store"
+	"github.com/kube-dosh/crproxy/internal/cas"
+	"github.com/kube-dosh/crproxy/internal/oci"
+	"github.com/kube-dosh/crproxy/internal/store"
 )
 
 var (

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"crproxy/internal/secretbox"
-	"crproxy/internal/store"
+	"github.com/kube-dosh/crproxy/internal/secretbox"
+	"github.com/kube-dosh/crproxy/internal/store"
 )
 
 type testKeys struct {

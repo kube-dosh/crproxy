@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"crproxy/internal/cas"
-	"crproxy/internal/proxy"
-	"crproxy/internal/secretbox"
-	"crproxy/internal/storage"
-	"crproxy/internal/store"
-	"crproxy/internal/upstreammgr"
+	"github.com/kube-dosh/crproxy/internal/cas"
+	"github.com/kube-dosh/crproxy/internal/proxy"
+	"github.com/kube-dosh/crproxy/internal/secretbox"
+	"github.com/kube-dosh/crproxy/internal/storage"
+	"github.com/kube-dosh/crproxy/internal/store"
+	"github.com/kube-dosh/crproxy/internal/upstreammgr"
 )
 
 func newTestCollector(t *testing.T) *Collector {

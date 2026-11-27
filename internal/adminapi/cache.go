@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"time"
 
-	"crproxy/internal/storage"
-	"crproxy/internal/store"
+	"github.com/kube-dosh/crproxy/internal/storage"
+	"github.com/kube-dosh/crproxy/internal/store"
 )
 
 func (h *Handler) handleCacheEntries(w http.ResponseWriter, r *http.Request, _ *principal) {

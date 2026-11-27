@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"crproxy/internal/auth"
+	"github.com/kube-dosh/crproxy/internal/auth"
 )
 
 type TokenHandler struct {

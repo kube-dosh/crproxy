@@ -45,7 +45,7 @@ See [docs/conformance-report.md](docs/conformance-report.md), [docs/acceptance-b
 ### Build and run
 
 ```bash
-git clone https://codeberg.org/aido/crproxy.git
+git clone https://github.com/kube-dosh/crproxy.git
 cd crproxy
 
 cp crproxy.example.yaml crproxy.yaml

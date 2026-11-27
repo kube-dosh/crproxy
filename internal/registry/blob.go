@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"crproxy/internal/store"
+	"github.com/kube-dosh/crproxy/internal/store"
 )
 
 func (h *Handler) handleBlob(w http.ResponseWriter, r *http.Request, route parsedRoute) {

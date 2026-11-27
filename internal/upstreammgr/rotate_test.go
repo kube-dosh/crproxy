@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"crproxy/internal/secretbox"
-	"crproxy/internal/store"
+	"github.com/kube-dosh/crproxy/internal/secretbox"
+	"github.com/kube-dosh/crproxy/internal/store"
 )
 
 func TestRotateMasterKeyRewrapsCredentialsAndResumes(t *testing.T) {

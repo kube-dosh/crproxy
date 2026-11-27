@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"crproxy/internal/oci"
+	"github.com/kube-dosh/crproxy/internal/oci"
 )
 
 type Content struct {
